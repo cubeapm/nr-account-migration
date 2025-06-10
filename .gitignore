@@ -16,3 +16,8 @@ db/
 venv/
 
 config.ini
+
+# added by cubeapm
+/bin/
+/lib/
+/pyvenv.cfg
