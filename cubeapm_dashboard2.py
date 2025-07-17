@@ -369,8 +369,22 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
 
 
 def migrate(src_acct_id, mode):
-    entities = store.load_json_from_file('output', '%s_entities_extended.json' % str(src_acct_id))
+    # Try to load extended entities first, fall back to regular entities
+    try:
+        entities = store.load_json_from_file('output', '%s_entities_extended.json' % str(src_acct_id))
+        logger.info('Loaded extended entities file')
+    except:
+        try:
+            entities = store.load_json_from_file('output', '%s_entities.json' % str(src_acct_id))
+            logger.info('Loaded regular entities file')
+        except:
+            logger.warning('No entities file found, using empty list')
+            entities = []
+    
     dashboard_widgets = store.load_json_file(src_acct_id, "dashboards", 'dashboard_widgets.json')
+
+    logger.info('Loaded %d entities and dashboard widgets' % (len(entities) if entities else 0))
+    logger.info('Dashboard widgets structure: %s' % list(dashboard_widgets.keys()))
 
     cubeapm_dashboards = []
     
@@ -380,6 +394,7 @@ def migrate(src_acct_id, mode):
         dashboard_widgets_data = dashboard_info.get('widgets', {})
         
         logger.info('Processing dashboard: %s' % dashboard_name)
+        logger.info('Dashboard widgets data keys: %s' % list(dashboard_widgets_data.keys()))
         
         cubeapm_dashboard = {
             'name': dashboard_name,
@@ -396,10 +411,13 @@ def migrate(src_acct_id, mode):
                 }
                 
                 if 'widgets' in page:
+                    logger.info('Found %d widgets in page %s' % (len(page['widgets']), page.get('name', 'Unknown')))
                     for widget in page['widgets']:
+                        logger.info('Processing widget: %s' % widget.get('title', 'Unknown'))
                         cubeapm_widget = translate_widget(widget, entities, mode)
                         if cubeapm_widget:
                             cubeapm_page['widgets'].append(cubeapm_widget)
+                            logger.info('Added widget with %d queries' % len(cubeapm_widget.get('queries', [])))
                 
                 cubeapm_dashboard['pages'].append(cubeapm_page)
         
@@ -409,48 +427,60 @@ def migrate(src_acct_id, mode):
 
 
 def translate_widget(widget, entities, mode):
-    widget_type = widget.get('type', 'UNKNOWN')
+    # Determine widget type from visualization ID
+    visualization = widget.get('visualization', {})
+    visualization_id = visualization.get('id', '') if visualization else ''
     raw_config = widget.get('rawConfiguration', {})
     
     cubeapm_widget = {
         'id': widget.get('id', ''),
         'title': widget.get('title', ''),
-        'type': translate_widget_type(widget_type),
+        'type': translate_widget_type(visualization_id),
         'position': widget.get('position', {}),
         'layout': widget.get('layout', {})
     }
     
-    if widget_type == 'nrql':
+    # Process NRQL queries if they exist
+    if 'nrqlQueries' in raw_config:
         cubeapm_widget['queries'] = []
-        if 'nrqlQueries' in raw_config:
-            for query in raw_config['nrqlQueries']:
-                if 'query' in query:
-                    query_type, translated_query, model, priority = mapQuery(query['query'], entities)
-                    cubeapm_widget['queries'].append({
-                        'type': query_type,
-                        'query': translated_query,
-                        'model': json.loads(model) if model != '{}' else {},
-                        'priority': priority
-                    })
+        for query in raw_config['nrqlQueries']:
+            if 'query' in query:
+                query_type, translated_query, model, priority = mapQuery(query['query'], entities)
+                cubeapm_widget['queries'].append({
+                    'type': query_type,
+                    'query': translated_query,
+                    'model': json.loads(model) if model != '{}' else {},
+                    'priority': priority
+                })
+                logger.info('Translated query: %s -> %s' % (query['query'], translated_query))
     
-    elif widget_type == 'markdown':
+    # Handle markdown widgets
+    elif 'text' in raw_config:
         cubeapm_widget['content'] = raw_config.get('text', '')
     
-    elif widget_type == 'metric':
+    # Handle metric widgets
+    elif 'value' in raw_config:
         cubeapm_widget['value'] = raw_config.get('value', 0)
         cubeapm_widget['unit'] = raw_config.get('unit', '')
     
     return cubeapm_widget
 
 
-def translate_widget_type(nr_widget_type):
+def translate_widget_type(visualization_id):
+    # New Relic visualization ID mapping
     widget_type_map = {
-        'nrql': 'chart',
-        'markdown': 'text',
-        'metric': 'metric',
-        'billboard': 'metric'
+        'viz.line': 'chart',
+        'viz.bar': 'chart',
+        'viz.pie': 'chart',
+        'viz.table': 'chart',
+        'viz.area': 'chart',
+        'viz.billboard': 'metric',
+        'viz.markdown': 'text',
+        'viz.heatmap': 'chart',
+        'viz.funnel': 'chart',
+        'viz.histogram': 'chart'
     }
-    return widget_type_map.get(nr_widget_type, 'chart')
+    return widget_type_map.get(visualization_id, 'chart')
 
 
 def save_cubeapm_dashboards(account_id, cubeapm_dashboards, mode):
