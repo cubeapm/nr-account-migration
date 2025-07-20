@@ -1,3 +1,18 @@
+#!/usr/bin/env python3
+"""
+DEPRECATED: This script has been replaced by cubeapm_fetchwidgets_optimized.py
+
+The original script makes duplicate API calls to fetch dashboard definitions.
+Please use cubeapm_fetchwidgets_optimized.py instead for better performance.
+
+Migration guide:
+1. Use cubeapm_fetchdashboards.py to get dashboard definitions
+2. Use cubeapm_fetchwidgets_optimized.py to get widgets (uses existing dashboard data)
+3. This eliminates 50% of API calls and reduces execution time
+
+This file is kept for backward compatibility only.
+"""
+
 import os
 import sys
 import argparse
@@ -17,6 +32,10 @@ def migrate(
     src_region: str,
     src_api_key: str,
 ):
+    # Show deprecation warning
+    logger.warning('DEPRECATED: This script makes duplicate API calls. Use cubeapm_fetchwidgets_optimized.py instead.')
+    logger.warning('The optimized version eliminates redundant dashboard definition API calls.')
+    
     dashboard_names = store.load_names(dashboard_file_path)
 
     all_widgets = {
