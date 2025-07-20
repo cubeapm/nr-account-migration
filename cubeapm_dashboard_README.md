@@ -33,8 +33,6 @@ python3 cubeapm_listdashboards.py --sourceAccount $CUBE_MIGRATE_SRC_ACCOUNT --so
 
 ## Download Dashboards and Widgets
 
-### Option 1: Optimized Workflow (Recommended)
-
 **Step 1: Download Dashboard Definitions**
 ```bash
 python3 cubeapm_fetchdashboards.py --sourceAccount $CUBE_MIGRATE_SRC_ACCOUNT --sourceApiKey $CUBE_MIGRATE_SRC_KEY --sourceRegion $CUBE_MIGRATE_SRC_REGION --fromFile dashboard_names.txt
@@ -43,31 +41,12 @@ python3 cubeapm_fetchdashboards.py --sourceAccount $CUBE_MIGRATE_SRC_ACCOUNT --s
 # output: output/<account_id>_dashboards.csv
 ```
 
-**Step 2: Download Dashboard Widgets (Optimized)**
+**Step 2: Download Dashboard Widgets**
 ```bash
-python3 cubeapm_fetchwidgets_optimized.py --sourceAccount $CUBE_MIGRATE_SRC_ACCOUNT --sourceApiKey $CUBE_MIGRATE_SRC_KEY --sourceRegion $CUBE_MIGRATE_SRC_REGION
+python3 cubeapm_fetchwidgets.py --sourceAccount $CUBE_MIGRATE_SRC_ACCOUNT --sourceApiKey $CUBE_MIGRATE_SRC_KEY --sourceRegion $CUBE_MIGRATE_SRC_REGION
 
 # output: db/<account_id>/dashboards/dashboard_widgets.json
 ```
-
-### Option 2: Original Workflow (Legacy)
-
-**Step 1: Download Dashboard Definitions**
-```bash
-python3 cubeapm_fetchdashboards.py --sourceAccount $CUBE_MIGRATE_SRC_ACCOUNT --sourceApiKey $CUBE_MIGRATE_SRC_KEY --sourceRegion $CUBE_MIGRATE_SRC_REGION --fromFile dashboard_names.txt
-
-# output: db/<account_id>/dashboards/dashboards.json
-# output: output/<account_id>_dashboards.csv
-```
-
-**Step 2: Download Dashboard Widgets (Original)**
-```bash
-python3 cubeapm_fetchwidgets.py --sourceAccount $CUBE_MIGRATE_SRC_ACCOUNT --sourceApiKey $CUBE_MIGRATE_SRC_KEY --sourceRegion $CUBE_MIGRATE_SRC_REGION --fromFile output/${CUBE_MIGRATE_SRC_ACCOUNT}_dashboards.csv
-
-# output: db/<account_id>/dashboards/dashboard_widgets.json
-```
-
-> **Note**: The original workflow makes duplicate API calls to fetch dashboard definitions. The optimized workflow eliminates this redundancy by reusing the already-fetched dashboard data.
 
 ## Extend Entities
 
@@ -93,27 +72,13 @@ cat db/$CUBE_MIGRATE_SRC_ACCOUNT/dashboards/dashboard_widgets.json | jq '.widget
 
 ## Dashboard Migration Workflow
 
-### Optimized Workflow (Recommended)
-
 1. **Fetch entities** - Get all entity mappings needed for widget translation
 2. **List dashboards** - Get all available dashboard names from New Relic
 3. **Download dashboards** - Get dashboard definitions and metadata (22 API calls)
-4. **Download widgets (optimized)** - Get all widget configurations using existing dashboard data (0 duplicate API calls)
+4. **Download widgets** - Get all widget configurations using existing dashboard data
 5. **Extend entities** - Find any missing entities referenced in widgets
 6. **Generate CubeAPM config** - Convert New Relic dashboards to CubeAPM format
 
-### Performance Comparison
-
-| Workflow | Dashboard API Calls | Widget API Calls | Total API Calls |
-|----------|-------------------|------------------|-----------------|
-| Original | 22 | 22 (duplicate) | 44 |
-| Optimized | 22 | 0 (reused data) | 22 |
-
-**Benefits of Optimized Workflow:**
-- ✅ **50% fewer API calls** (22 instead of 44)
-- ✅ **Faster execution** (no duplicate network requests)
-- ✅ **Reduced API rate limiting** risk
-- ✅ **Cleaner separation of concerns**
 
 ## Supported Widget Types
 
@@ -129,25 +94,3 @@ The generated CubeAPM dashboard configuration includes:
 - Widget configurations with translated queries
 - Entity mappings for service names
 - Chart configurations compatible with CubeAPM
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Dashboard definitions file not found**: Ensure you run `cubeapm_fetchdashboards.py` before `cubeapm_fetchwidgets_optimized.py`
-2. **API rate limiting**: Use the optimized workflow to reduce API calls
-3. **Missing entities**: Run `cubeapm_dashboard1.py` to extend entity mappings
-
-### File Dependencies
-
-```
-dashboard_names.txt
-    ↓
-cubeapm_fetchdashboards.py
-    ↓
-db/<account_id>/dashboards/dashboards.json
-    ↓
-cubeapm_fetchwidgets_optimized.py
-    ↓
-db/<account_id>/dashboards/dashboard_widgets.json
-``` 
