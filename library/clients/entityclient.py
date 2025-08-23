@@ -501,154 +501,27 @@ def gql_get_paginated_results(api_key, payload_builder, payload_processor, regio
 
 
 def show_url_for_app(entity_type, app_id, region=Endpoints.REGION_US):
-    logger.info(f"=== SHOW_URL_FOR_APP DEBUG ===")
-    logger.info(f"Entity Type: {entity_type}")
-    logger.info(f"App ID: {app_id}")
-    logger.info(f"Region: {region}")
-    
-    show_url = None
     if MOBILE_APP == entity_type:
         show_url = Endpoints.of(region).SHOW_MOBILE_APP_URL
-        logger.info(f"✓ Using MOBILE_APP URL: {show_url}")
-    elif APM_APP == entity_type:
+    if APM_APP == entity_type:
         show_url = Endpoints.of(region).SHOW_APM_APP_URL
-        logger.info(f"✓ Using APM_APP URL: {show_url}")
-    else:
-        logger.error('Only supported for ' + MOBILE_APP + ' and ' + APM_APP)
-        return None
-    
     if show_url:
-        final_url = show_url + app_id + '.json'
-        logger.info(f"✓ Final URL: {final_url}")
-        logger.info(f"=== END SHOW_URL_FOR_APP DEBUG ===")
-        return final_url
-    else:
-        logger.error('show_url is None for entity_type: ' + entity_type)
-        logger.info(f"=== END SHOW_URL_FOR_APP DEBUG ===")
-        return None
+        return show_url + app_id + '.json'
+    logger.error('Only supported for ' + MOBILE_APP + ' and ' + APM_APP)
 
 
 def get_app_entity(api_key, entity_type, app_id, region=Endpoints.REGION_US):
     result = {'entityFound': False}
-    
-    logger.info(f"=== FETCHING APM ENTITY VIA GRAPHQL ===")
-    logger.info(f"Entity Type: {entity_type}")
-    logger.info(f"App ID: {app_id}")
-    logger.info(f"Region: {region}")
-    
-    # Clean the app_id if it has entity- prefix
-    clean_app_id = app_id
-    if str(app_id).startswith('entity-'):
-        clean_app_id = str(app_id).replace('entity-', '')
-        logger.info(f"Cleaned app ID: {clean_app_id} (removed 'entity-' prefix)")
-    
-    # Use GraphQL instead of REST API
-    graphql_query = '''query PlatformEntitySearchQuery($cursor:String=null$includeCount:Boolean=false$includeResults:Boolean=true$includeSummaryMetrics:Boolean=false$includeTags:Boolean=false$limit:Int=500$nrql:String$sortType:[EntitySearchSortCriteria]=null){actor{entitySearch(query:$nrql sortBy:$sortType options:{limit:$limit}){results(cursor:$cursor)@include(if:$includeResults){entities{...EntityInfo ...EntityTags@include(if:$includeTags)...SummaryMetrics@include(if:$includeSummaryMetrics)...EntityFragmentExtension guid __typename}nextCursor ...SummaryMetricDefinitions@include(if:$includeSummaryMetrics)__typename}count types@include(if:$includeCount){count domain type __typename}__typename}__typename}}fragment EntityInfo on EntityOutline{guid accountId domain type name reporting account{id name __typename}...on AlertableEntityOutline{alertSeverity __typename}__typename}fragment EntityTags on EntityOutline{guid tags{key values __typename}__typename}fragment SummaryMetricDefinitions on EntitySearchResult{entityTypes{domain type summaryMetricDefinitions{name title unit __typename}id __typename}__typename}fragment SummaryMetrics on EntityOutline{guid summaryMetrics{value{...on EntitySummaryNumericMetricValue{numericValue __typename}...on EntitySummaryStringMetricValue{stringValue __typename}__typename}__typename}__typename}fragment EntityFragmentExtension on EntityOutline{guid __typename}'''
-    
-    # Build NRQL query to search for the specific entity - try multiple approaches
-    nrql_queries = [
-        f"(id IN ('{clean_app_id}'))",
-        f"(guid = '{clean_app_id}')",
-        f"(name LIKE '%{clean_app_id}%')"
-    ]
-    
-    for nrql_query in nrql_queries:
-        logger.info(f"Trying NRQL query: {nrql_query}")
-        
-        variables = {
-            "cursor": None,
-            "includeCount": False,
-            "includeResults": True,
-            "includeSummaryMetrics": False,
-            "includeTags": True,
-            "limit": 500,
-            "nrql": nrql_query,
-            "sortType": None
-        }
-        
-        payload = {
-            "query": graphql_query,
-            "variables": variables
-        }
-        
-        logger.info(f"GraphQL URL: {Endpoints.of(region).GRAPHQL_URL}")
-        logger.info(f"GraphQL Headers: {gql_headers(api_key)}")
-        logger.info(f"GraphQL Payload: {json.dumps(payload, indent=2)}")
-        
-        try:
-            response = requests.post(
-                Endpoints.of(region).GRAPHQL_URL, 
-                json=payload, 
-                headers=gql_headers(api_key)
-            )
-            
-            logger.info(f"Response Status: {response.status_code}")
-            logger.info(f"Response Headers: {dict(response.headers)}")
-            logger.info(f"Response URL: {response.url}")
-            logger.info(f"Raw Response Text: {response.text}")
-            
-            result['status'] = response.status_code
-            
-            if response.status_code != 200:
-                logger.error(f"GraphQL request failed with status {response.status_code}")
-                if response.text:
-                    result['error'] = response.text
-                    logger.error(f"Error response: {response.text}")
-                continue
-            else:
-                try:
-                    response_json = response.json()
-                    logger.info(f"Parsed GraphQL Response: {json.dumps(response_json, indent=2)}")
-                    
-                    if 'data' in response_json and 'actor' in response_json['data']:
-                        entity_search = response_json['data']['actor']['entitySearch']
-                        logger.info(f"Entity search results: {entity_search}")
-                        
-                        if 'results' in entity_search and 'entities' in entity_search['results']:
-                            entities = entity_search['results']['entities']
-                            logger.info(f"Found {len(entities)} entities")
-                            
-                            if entities:
-                                # Take the first entity found
-                                entity = entities[0]
-                                logger.info(f"✓ Entity found successfully: {entity}")
-                                
-                                # Transform the GraphQL response to match expected format
-                                transformed_entity = {
-                                    'guid': entity.get('guid'),
-                                    'name': entity.get('name'),
-                                    'type': entity.get('type'),
-                                    'domain': entity.get('domain'),
-                                    'accountId': entity.get('accountId'),
-                                    'reporting': entity.get('reporting'),
-                                    'tags': entity.get('tags', [])
-                                }
-                                
-                                result['entityFound'] = True
-                                result['entity'] = transformed_entity
-                                logger.info(f"✓ Transformed entity: {transformed_entity}")
-                                return result  # Success, exit early
-                            else:
-                                logger.warning(f"⚠️ No entities found in search results for query: {nrql_query}")
-                        else:
-                            logger.warning(f"⚠️ No results or entities in response. Available keys: {list(entity_search.keys())}")
-                    else:
-                        logger.warning(f"⚠️ No 'data' or 'actor' key found in response. Available keys: {list(response_json.keys())}")
-                        
-                except json.JSONDecodeError as e:
-                    logger.error(f"❌ Failed to parse JSON response: {e}")
-                    logger.error(f"Raw response: {response.text}")
-                    result['error'] = f"JSON parse error: {e}"
-                    
-        except Exception as e:
-            logger.error(f"❌ Exception during GraphQL request: {e}")
-            result['error'] = f"Exception: {e}"
-    
-    # If we get here, no entity was found with any query
-    logger.error(f"❌ Entity {app_id} not found with any search method")
-    result['error'] = f"Entity not found with any search method"
-    logger.info(f"Final result: {result}")
-    logger.info(f"=== END APM ENTITY GRAPHQL DEBUG ===")
+    get_url = show_url_for_app(entity_type, app_id, region)
+    response = requests.get(get_url, headers=rest_api_headers(api_key))
+    result['status'] = response.status_code
+    if response.status_code != 200:
+        if response.text:
+            logger.error("Error getting application info for app_id " + app_id)
+            result['error'] = response.text
+    else:
+        result['entityFound'] = True
+        result['entity'] = response.json()['application']
     return result
 
 
@@ -712,31 +585,13 @@ def get_apm_kt(api_key, kt_id, region=Endpoints.REGION_US):
 
 
 def get_entity(api_key, entity_type, entity_id, region=Endpoints.REGION_US):
-    logger.info(f"=== GET_ENTITY CALLED ===")
-    logger.info(f"API Key: {api_key[:10]}..." if api_key else "None")
-    logger.info(f"Entity Type: {entity_type}")
-    logger.info(f"Entity ID: {entity_id}")
-    logger.info(f"Region: {region}")
-    
     if entity_type in [APM_APP, MOBILE_APP]:
-        logger.info(f"✓ Calling get_app_entity for {entity_type}")
-        result = get_app_entity(api_key, entity_type, entity_id, region)
-        logger.info(f"get_app_entity result: {result}")
-        logger.info(f"Entity found: {result.get('entityFound', False)}")
-        if result.get('entityFound'):
-            logger.info(f"Entity data: {result.get('entity', {})}")
-        else:
-            logger.info(f"Error: {result.get('error', 'Unknown error')}")
-        return result
+        return get_app_entity(api_key, entity_type, entity_id, region)
     if entity_type == BROWSER_APP:
-        logger.info(f"✓ Calling get_browser_entity")
         return get_browser_entity(api_key, entity_id, region)
     if entity_type == APM_KT:
-        logger.info(f"✓ Calling get_apm_kt")
         return get_apm_kt(api_key, entity_id, region)
-    
     logger.warn('Skipping non APM entities ' + entity_type)
-    logger.info(f"=== END GET_ENTITY ===")
     return {'entityFound':  False}
 
 
