@@ -133,6 +133,79 @@ def makeEsr(entityType, names):
     return fragment, labelPairs
 
 
+def resolve_entities_to_services(entities, all_entities):
+    """
+    Helper function to resolve entity IDs to service names.
+    Eliminates duplicate code between error_percentage and response_time_percentile conditions.
+    """
+    names = []
+    
+    if entities:
+        # Entity-specific condition
+        for guid in entities:
+            if guid == "policy-level":
+                # Policy-level condition - use dummy service
+                names.append({'service': 'dummy'})
+            else:
+                try:
+                    # More robust entity filtering that handles missing fields and type mismatches
+                    filtered_entities = []
+                    for x in all_entities:
+                        # Check if entity has the required fields before accessing them
+                        if 'guid' in x and str(x['guid']) == str(guid):
+                            filtered_entities.append(x)
+                        elif 'id' in x and str(x['id']) == str(guid):
+                            filtered_entities.append(x)
+                        # Also try with the clean entity ID (without 'entity-' prefix)
+                        elif guid.startswith('entity-'):
+                            clean_guid = guid.replace('entity-', '')
+                            if 'guid' in x and str(x['guid']) == str(clean_guid):
+                                filtered_entities.append(x)
+                            elif 'id' in x and str(x['id']) == str(clean_guid):
+                                filtered_entities.append(x)
+                except Exception as e:
+                    # If there's an error accessing fields, use the entity ID as fallback
+                    logger.warning(f"Error filtering entities for guid {guid}: {e}")
+                    filtered_entities = []
+                
+                if filtered_entities:
+                    entity = filtered_entities[0]
+                    names.append({'service': entity['name']})
+    
+    if not names:
+        # Fallback to using the original entity IDs
+        names = [{'service': f"entity-{guid}"} for guid in entities]
+    
+    return names
+
+
+def create_service_filter_and_model(names, metric_type, metric_value=None):
+    """
+    Helper function to create service filter and model configuration.
+    Eliminates duplicate code between error_percentage and response_time_percentile conditions.
+    """
+    # Create service filter
+    if len(names) == 1:
+        fragment = 'service="{}"'.format(dquote(names[0]['service']))
+    else:
+        fragment = 'service=~"{}"'.format(requote([x['service'] for x in names]))
+    
+    # Create model configuration
+    model = {
+        "model": {
+            "type": "quick",
+            "calculate": metric_type,
+            "value": str(metric_value) if metric_value is not None else "0",
+            "labelPairs": [
+                {"label": "service", "operator": "=" if len(names) == 1 else "=~", "values": [x['service'] for x in names], "options": []}
+            ],
+            "groupBy": ["service"],
+        },
+    }
+    
+    return fragment, model
+
+
 # TODO properly handle facet in apdex, latency_average, and latency_percentile
 def mapQuery(query, all_entities):
     # apdex ############################
@@ -422,67 +495,17 @@ def mapAppCondition(app_condition, all_entities):
     if condition_type == 'apm_app_metric' and metric == 'error_percentage':
         # Handle error percentage for APM applications
         try:
-            # Get entity information
-            entity_guids = entities
-            names = []
-            for guid in entity_guids:
-                if guid == "policy-level":
-                    # Policy-level condition - use dummy service
-                    names.append({'service': 'dummy'})
-                else:
-                    try:
-                        # More robust entity filtering that handles missing fields and type mismatches
-                        filtered_entities = []
-                        for x in all_entities:
-                            # Check if entity has the required fields before accessing them
-                            if 'guid' in x and str(x['guid']) == str(guid):
-                                filtered_entities.append(x)
-                            elif 'id' in x and str(x['id']) == str(guid):
-                                filtered_entities.append(x)
-                            # Also try with the clean entity ID (without 'entity-' prefix)
-                            elif guid.startswith('entity-'):
-                                clean_guid = guid.replace('entity-', '')
-                                if 'guid' in x and str(x['guid']) == str(clean_guid):
-                                    filtered_entities.append(x)
-                                elif 'id' in x and str(x['id']) == str(clean_guid):
-                                    filtered_entities.append(x)
-                    except Exception as e:
-                        # If there's an error accessing fields, use the entity ID as fallback
-                        logger.warning(f"Error filtering entities for guid {guid}: {e}")
-                        filtered_entities = []
-                    
-                    if filtered_entities:
-                        entity = filtered_entities[0]
-                        names.append({'service': entity['name']})
-                    
-            if not names:
-                # Fallback to using the original entity IDs
-                names = [{'service': f"entity-{guid}"} for guid in entity_guids]
+            # Get entity information using helper function
+            names = resolve_entities_to_services(entities, all_entities)
             
-            # Create service filter
-            if len(names) == 1:
-                fragment = 'service="{}"'.format(dquote(names[0]['service']))
-            else:
-                fragment = 'service=~"{}"'.format(requote([x['service'] for x in names]))
+            # Create service filter and model using helper function
+            fragment, model = create_service_filter_and_model(names, "error_percentage")
             
             # Create the error percentage query
             spanKind = 'span_kind=~"server|consumer"'
             newQuery = 'sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}, status_code="ERROR"}} default 0)) by (service) * 100 / sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}}} default 0)) by (service)'.format(
                 fragment=fragment, spanKind=spanKind
             )
-            
-            # Create model configuration
-            model = {
-                "model": {
-                    "type": "quick",
-                    "calculate": "error_percentage",
-                    "value": "0",
-                    "labelPairs": [
-                        {"label": "service", "operator": "=" if len(names) == 1 else "=~", "values": [x['service'] for x in names], "options": []}
-                    ],
-                    "groupBy": ["service"],
-                },
-            }
             
             return 'ERROR_PERCENTAGE', newQuery, json.dumps(model), 1
             
@@ -492,91 +515,19 @@ def mapAppCondition(app_condition, all_entities):
     elif condition_type == 'apm_response_time_percentile':
         # Handle response time percentile for APM applications
         try:
-            # Get entity information
-            entity_guids = entities
-            names = []
+            # Get entity information using helper function
+            names = resolve_entities_to_services(entities, all_entities)
             
-            if entity_guids:
-                # Entity-specific condition
-                for guid in entity_guids:
-                    if guid == "policy-level":
-                        # Policy-level condition - use dummy service
-                        names.append({'service': 'dummy'})
-                    else:
-                        # More robust entity filtering that handles missing fields and type mismatches
-                        filtered_entities = []
-                        for x in all_entities:
-                            # Check if entity has the required fields before accessing them
-                            if 'guid' in x and str(x['guid']) == str(guid):
-                                filtered_entities.append(x)
-                            elif 'applicationId' in x and str(x['applicationId']) == str(guid):
-                                filtered_entities.append(x)
-                            # Also try with the clean entity ID (without 'entity-' prefix)
-                            elif guid.startswith('entity-'):
-                                clean_guid = guid.replace('entity-', '')
-                                if 'guid' in x and str(x['guid']) == str(clean_guid):
-                                    filtered_entities.append(x)
-                                elif 'applicationId' in x and str(x['applicationId']) == str(clean_guid):
-                                    filtered_entities.append(x)
-                        if filtered_entities:
-                            entity = filtered_entities[0]
-                            if entity['entityType'] == 'APM_APPLICATION_ENTITY':
-                                names.append({'service': entity['name']})
-                            else:
-                                # Use the original entity ID if type is not supported
-                                names.append({'service': f"entity-{guid}"})
-                        else:
-                            # Use the original entity ID if not found in entities file
-                            names.append({'service': f"entity-{guid}"})
-                
-                if not names:
-                    # Fallback to using the original entity IDs
-                    names = [{'service': f"entity-{guid}"} for guid in entity_guids]
-                
-                # Create service filter
-                if len(names) == 1:
-                    fragment = 'service="{}"'.format(dquote(names[0]['service']))
-                else:
-                    fragment = 'service=~"{}"'.format(requote([x['service'] for x in names]))
-                
-                # Create model configuration
-                model = {
-                    "model": {
-                        "type": "quick",
-                        "calculate": "latency_percentile",
-                        "value": app_condition.get('percentile_value', '90'),
-                        "labelPairs": [
-                            {"label": "service", "operator": "=" if len(names) == 1 else "=~", "values": [x['service'] for x in names], "options": []}
-                        ],
-                        "groupBy": ["service"],
-                    },
-                }
-            else:
-                # Policy-level condition (no specific entities) - use "dummy" entity
-                fragment = 'service="dummy"'
-                model = {
-                    "model": {
-                        "type": "quick",
-                        "calculate": "latency_percentile",
-                        "value": app_condition.get('percentile_value', '90'),
-                        "labelPairs": [
-                            {"label": "service", "operator": "=", "values": ["dummy"], "options": []}
-                        ],
-                        "groupBy": ["service"],
-                    },
-                }
-            
-            # Get percentile value (default to 90 if not specified)
-            percentile_value = app_condition.get('percentile_value', '90')
-            percentile_decimal = float(percentile_value) / 100.0
+            # Create service filter and model using helper function
+            fragment, model = create_service_filter_and_model(names, "latency_percentile", app_condition.get('percentile_value', '90'))
             
             # Create the response time percentile query
             spanKind = 'span_kind=~"server|consumer"'
-            newQuery = 'histogram_quantile({percentile}, sum(increase(cube_apm_latency_bucket{{{fragment}, {spanKind}}} default 0)) by (vmrange, service)) * 1000'.format(
-                fragment=fragment, spanKind=spanKind, percentile=percentile_decimal
+            newQuery = 'histogram_quantile(0.{percentile}, sum(rate(cube_apm_calls_duration_seconds_bucket{{{fragment}, {spanKind}}}[5m])) by (service, le))'.format(
+                fragment=fragment, spanKind=spanKind, percentile=app_condition.get('percentile_value', '90')
             )
             
-            return 'LATENCY_PERCENTILE', newQuery, json.dumps(model), 1000
+            return 'RESPONSE_TIME_PERCENTILE', newQuery, json.dumps(model), 1
             
         except Exception as ex:
             return "ERROR", f"Error processing app condition: {ex}", '{}', 1
@@ -849,7 +800,7 @@ def squoteSQL(str, mode):
     raise ValueError("invalid mode")
 
 def requote(str_list):
-    return [re.escape(x) for x in str_list].join('|')
+    return '|'.join([re.escape(x) for x in str_list])
 
 
 if __name__ == '__main__':
