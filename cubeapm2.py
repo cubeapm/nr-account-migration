@@ -291,8 +291,6 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
             newQuery = 'sum(rate(cube_apm_calls_total{{{fragment}, {spanKind}}} default 0)){groupBy} * 60'.format(fragment=fragment, spanKind=spanKind, groupBy=groupByStr)
         else:
             newQuery = 'sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}}} default 0)){groupBy}'.format(fragment=fragment, spanKind=spanKind, groupBy=groupByStr)
-        
-        # print(newQuery)
         return 'REQUEST_COUNT', newQuery, json.dumps(model), 1
     
     # error rate ############################
@@ -335,8 +333,6 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
         }
 
         newQuery = 'sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}, status_code="ERROR"}} default 0)){groupBy} * 100 / sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}}} default 0)){groupBy}'.format(fragment=fragment, spanKind=spanKind, groupBy=groupByStr)
-        
-        # print(newQuery)
         return 'ERROR_PERCENTAGE', newQuery, json.dumps(model), 1
     
     # avg latency ############################
@@ -407,10 +403,8 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
         groupByStr = ' by ({})'.format(','.join(groupBy)) if groupBy else ''
         newQuery = 'sum(increase(cube_apm_latency_sum{{{fragment}, {spanKind}}} default 0)){groupBy} * 1000 / sum(increase(cube_apm_latency_count{{{fragment}, {spanKind}}} default 0)){groupBy}'.format(fragment=fragment, spanKind=spanKind, groupBy=groupByStr)
         
-        # print(newQuery)
         return 'LATENCY_AVERAGE', newQuery, json.dumps(model), thresholdMultiplier
     
-    # percentile latency ############################
     res = re.search(
         r"^\s*SELECT\s+percentile\s*\(\s*duration\s*,\s*(?P<percentile>[0-9\.]+)\s*\)\s+FROM\s+Transaction\s+WHERE\s+" + idRegEx + r"\s*" + transactionTypeOptionalRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
         query, flags=re.IGNORECASE
@@ -455,28 +449,14 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
                 raise ValueError("unhandled transactionType " + transactionType)
         
         newQuery = 'histogram_quantile({percentile}/100, sum(increase(cube_apm_latency_bucket{{{fragment}, {spanKind}}} default 0)) by (vmrange, service)) * 1000'.format(fragment=fragment, spanKind=spanKind, percentile=percentile)
-        
-        # print(newQuery)
         return 'LATENCY_PERCENTILE', newQuery, json.dumps(model), thresholdMultiplier
-
-    # AWS metrics ############################
-    # res = re.search(
-    #     r"^\s*SELECT\s+average\s*\(\s*`aws\.(?P<awsService>\w+)\.(?P<awsMetric>\w+)`\s*\)\s*FROM\s+Metric\s+FACET\s*`aws\.(?P=awsService)\.(?P<awsDimension>)`\s*WHERE\s+`collector.name`\s*=\s*['\"][\w-]+['\"]\s*AND\s*`aws\.accountId`\s*=\s*['\"]' AND `aws.Arn` LIKE 'arn:aws:rds:ap-south-1:411342004333:db:checkout-prod-readonly'\s*$",
-    #     query, flags=re.IGNORECASE
-    # )
-    # if res:
-    #     groupdict = res.groupdict()
-
     return "UNHANDLED", query, '{}', 1
 
 
 def mapAppCondition(app_condition, all_entities):
-    """
-    Map app conditions (like apm_app_metric) to Prometheus queries
-    """
     condition_type = app_condition['type']
-    metric = app_condition.get('metric', None)  # Some conditions don't have metric field
-    entities = app_condition.get('entities', [])  # Some conditions don't have entities field
+    metric = app_condition.get('metric', None)  
+    entities = app_condition.get('entities', [])
     
     # If no entities specified, this is a policy-level condition
     if not entities:
@@ -549,9 +529,7 @@ def migrate(src_acct_id, mode):
         kind = 'anomaly' if conditionType == 'BASELINE' else 'static'
         name = condition['name']
         interval = condition['signal']['aggregationWindow']
-        # expr = condition['nrql']['query']
         expr2 = ''
-        # forValue = condition['terms']['thresholdDuration']
         labels = json.dumps({"group": all_policies[int(condition['policyId'])]['name']})
         annotations = '{}'
         status = 'ACTIVE' if condition['enabled'] else 'PAUSED'
@@ -634,31 +612,19 @@ def migrate(src_acct_id, mode):
         else:
             raise ValueError("unhandled len(terms) for condition id " + condition["id"])
 
-        if mode == 'mysql':
-            statement = """INSERT INTO alert_rules
-(account_id, datasource, kind, name, `interval`, expr, expr2, `for`, labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
-VALUES
-(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
-        else:
-            statement = """INSERT INTO alert_rules
-(account_id, datasource, kind, name, "interval", expr, expr2, "for", labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
-VALUES
-(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
+        statement = generate_alert_rules_insert(datasource, kind, name, interval, expr, expr2, forValue, labels, annotations, status, config, receiver, repeat_interval, mode)
         
         print(statement)
 
     for condition in all_alert_conditions['app']:
-        conditionType = 'STATIC'  # App conditions are always static
+        conditionType = 'STATIC' 
         baselineDirection = None
         
         datasource = 'prometheus'
         kind = 'static'
         name = condition['name']
-        interval = 60  # Default interval for app conditions
+        interval = 60 
         expr2 = ''
-        # Try to get policy name, but handle cases where policyId is missing
         policy_name = 'Unknown Policy'
         if 'policyId' in condition and condition['policyId'] in all_policies:
             policy_name = all_policies[int(condition['policyId'])]['name']
@@ -724,18 +690,7 @@ VALUES
         else:
             raise ValueError("unhandled len(terms) for condition id " + str(condition["id"]))
 
-        if mode == 'mysql':
-            statement = """INSERT INTO alert_rules
-(account_id, datasource, kind, name, `interval`, expr, expr2, `for`, labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
-VALUES
-(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
-        else:
-            statement = """INSERT INTO alert_rules
-(account_id, datasource, kind, name, "interval", expr, expr2, "for", labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
-VALUES
-(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
+        statement = generate_alert_rules_insert(datasource, kind, name, interval, expr, expr2, forValue, labels, annotations, status, config, receiver, repeat_interval, mode)
         
         print(statement)
 
@@ -791,6 +746,16 @@ def squoteSQL(str, mode):
 
 def requote(str_list):
     return [re.escape(x) for x in str_list].join('|')
+
+
+def generate_alert_rules_insert(datasource, kind, name, interval, expr, expr2, forValue, labels, annotations, status, config, receiver, repeat_interval, mode):
+    interval_quote = '`' if mode == 'mysql' else '"'
+    
+    return """INSERT INTO alert_rules
+(account_id, datasource, kind, name, {interval_quote}interval{interval_quote}, expr, expr2, {interval_quote}for{interval_quote}, labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
+VALUES
+(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+""".format(interval_quote, interval_quote, datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
 
 
 if __name__ == '__main__':
