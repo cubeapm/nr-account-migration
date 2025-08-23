@@ -49,8 +49,18 @@ def resolveEntityGuids(idType, entry, entries_str, entities):
         entityType = 'APPLICATION'
         for e in entries:
             val = int(e)
-            _filteredEntities = [x for x in entities if x['entityType'] == 'APM_APPLICATION_ENTITY' and x['applicationId'] == val]
-            names.append({'service': _filteredEntities[0]['name']})
+            # More robust entity filtering that handles missing fields and type mismatches
+            _filteredEntities = []
+            for x in entities:
+                if (x.get('entityType') == 'APM_APPLICATION_ENTITY' and 
+                    'applicationId' in x and str(x['applicationId']) == str(val)):
+                    _filteredEntities.append(x)
+            
+            if _filteredEntities:
+                names.append({'service': _filteredEntities[0]['name']})
+            else:
+                # Fallback: use the original app ID as service name
+                names.append({'service': f"app-{val}"})
     elif idType == 'entity.guid':
         for guid in entries:
             _filteredEntities = [x for x in entities if x['guid'] == guid]
@@ -421,22 +431,30 @@ def mapAppCondition(app_condition, all_entities):
                     names.append({'service': 'dummy'})
                 else:
                     try:
-                        filtered_entities = [x for x in all_entities if (x['guid'] == guid or x['applicationId'] == guid) ]
+                        # More robust entity filtering that handles missing fields and type mismatches
+                        filtered_entities = []
+                        for x in all_entities:
+                            # Check if entity has the required fields before accessing them
+                            if 'guid' in x and str(x['guid']) == str(guid):
+                                filtered_entities.append(x)
+                            elif 'id' in x and str(x['id']) == str(guid):
+                                filtered_entities.append(x)
+                            # Also try with the clean entity ID (without 'entity-' prefix)
+                            elif guid.startswith('entity-'):
+                                clean_guid = guid.replace('entity-', '')
+                                if 'guid' in x and str(x['guid']) == str(clean_guid):
+                                    filtered_entities.append(x)
+                                elif 'id' in x and str(x['id']) == str(clean_guid):
+                                    filtered_entities.append(x)
                     except Exception as e:
-                        # If there's an error accessing guid, use the entity ID as fallback
+                        # If there's an error accessing fields, use the entity ID as fallback
+                        logger.warning(f"Error filtering entities for guid {guid}: {e}")
                         filtered_entities = []
                     
                     if filtered_entities:
                         entity = filtered_entities[0]
-                        if entity['entityType'] == 'APM_APPLICATION_ENTITY':
-                            names.append({'service': entity['name']})
-                        else:
-                            # Use the original entity ID if type is not supported
-                            names.append({'service': f"entity-{guid}"})
-                    else:
-                        # Use the original entity ID if not found in entities file
-                        names.append({'service': f"entity-{guid}"})
-            
+                        names.append({'service': entity['name']})
+                    
             if not names:
                 # Fallback to using the original entity IDs
                 names = [{'service': f"entity-{guid}"} for guid in entity_guids]
@@ -485,7 +503,21 @@ def mapAppCondition(app_condition, all_entities):
                         # Policy-level condition - use dummy service
                         names.append({'service': 'dummy'})
                     else:
-                        filtered_entities = [x for x in all_entities if (x['guid'] == guid or x['applicationId'] == guid)]
+                        # More robust entity filtering that handles missing fields and type mismatches
+                        filtered_entities = []
+                        for x in all_entities:
+                            # Check if entity has the required fields before accessing them
+                            if 'guid' in x and str(x['guid']) == str(guid):
+                                filtered_entities.append(x)
+                            elif 'applicationId' in x and str(x['applicationId']) == str(guid):
+                                filtered_entities.append(x)
+                            # Also try with the clean entity ID (without 'entity-' prefix)
+                            elif guid.startswith('entity-'):
+                                clean_guid = guid.replace('entity-', '')
+                                if 'guid' in x and str(x['guid']) == str(clean_guid):
+                                    filtered_entities.append(x)
+                                elif 'applicationId' in x and str(x['applicationId']) == str(clean_guid):
+                                    filtered_entities.append(x)
                         if filtered_entities:
                             entity = filtered_entities[0]
                             if entity['entityType'] == 'APM_APPLICATION_ENTITY':
@@ -676,97 +708,95 @@ VALUES
         
         print(statement)
 
-    # Process app conditions
-    if 'app' in all_alert_conditions:
-        for condition in all_alert_conditions['app']:
-            conditionType = 'STATIC'  # App conditions are always static
-            baselineDirection = None
-            
-            datasource = 'prometheus'
-            kind = 'static'
-            name = condition['name']
-            interval = 60  # Default interval for app conditions
-            expr2 = ''
-            # Try to get policy name, but handle cases where policyId is missing
-            policy_name = 'Unknown Policy'
-            if 'policyId' in condition and condition['policyId'] in all_policies:
-                policy_name = all_policies[int(condition['policyId'])]['name']
-            labels = json.dumps({"group": policy_name})
-            annotations = '{}'
-            status = 'ACTIVE' if condition['enabled'] else 'PAUSED'
-            config = '{}'
-            receiver = json.dumps({
-                "email_configs":[],
-                "slack_configs":[],
-                "pagerduty_configs":[],
-                "googlechat_configs":[],
-                "webhook_configs":[
-                    {
-                        "url":"http://localhost",
-                        "type":"webhook",
-                        "send_resolved":True,
-                        "cube_show_query":False,
-                        "valid":True
-                    }
-            ]})
-            repeat_interval = 14400
+    for condition in all_alert_conditions['app']:
+        conditionType = 'STATIC'  # App conditions are always static
+        baselineDirection = None
+        
+        datasource = 'prometheus'
+        kind = 'static'
+        name = condition['name']
+        interval = 60  # Default interval for app conditions
+        expr2 = ''
+        # Try to get policy name, but handle cases where policyId is missing
+        policy_name = 'Unknown Policy'
+        if 'policyId' in condition and condition['policyId'] in all_policies:
+            policy_name = all_policies[int(condition['policyId'])]['name']
+        labels = json.dumps({"group": policy_name})
+        annotations = '{}'
+        status = 'ACTIVE' if condition['enabled'] else 'PAUSED'
+        config = '{}'
+        receiver = json.dumps({
+            "email_configs":[],
+            "slack_configs":[],
+            "pagerduty_configs":[],
+            "googlechat_configs":[],
+            "webhook_configs":[
+                {
+                    "url":"http://localhost",
+                    "type":"webhook",
+                    "send_resolved":True,
+                    "cube_show_query":False,
+                    "valid":True
+                }
+        ]})
+        repeat_interval = 14400
 
-            # Map app condition to query
-            qType, query, config, thresholdMultiplier = mapAppCondition(condition, all_entities)
-            if qType in ["UNHANDLED", "ERROR"]:
-                name = "[{}] {}".format(qType, name)
+        # Map app condition to query
+        qType, query, config, thresholdMultiplier = mapAppCondition(condition, all_entities)
+        if qType in ["UNHANDLED", "ERROR"]:
+            name = "[{}] {}".format(qType, name)
 
-            terms = condition['terms']
-            if len(terms) == 1:
-                forValue = int(terms[0]['duration']) * 60  # Convert minutes to seconds
-                threshold = terms[0]['threshold']
-                operator = appOperatorMap[terms[0]['operator']]
-                # Don't multiply threshold by thresholdMultiplier - it's meant for query generation, not threshold calculation
+        terms = condition['terms']
+        if len(terms) == 1:
+            forValue = int(terms[0]['duration']) * 60  # Convert minutes to seconds
+            threshold = terms[0]['threshold']
+            operator = appOperatorMap[terms[0]['operator']]
+            # Don't multiply threshold by thresholdMultiplier - it's meant for query generation, not threshold calculation
 
-                expr = "({query}) {operator} {threshold}".format(query=query, operator=operator, threshold=threshold)
-            elif len(terms) == 2:
-                if terms[0]['priority'] == 'warning':
-                    warningTerms = terms[0]
-                elif terms[0]['priority'] == 'critical':
-                    criticalTerms = terms[0]
-                else:
-                    raise ValueError("unhandled terms.priority for condition id " + str(condition["id"]))
-                if terms[1]['priority'] == 'warning':
-                    warningTerms = terms[1]
-                elif terms[1]['priority'] == 'critical':
-                    criticalTerms = terms[1]
-                else:
-                    raise ValueError("unhandled terms.priority for condition id " + str(condition["id"]))
-                
-                if not warningTerms or not criticalTerms:
-                    raise ValueError("unhandled terms for condition id " + str(condition["id"]))
-                
-                forValue = int(warningTerms['duration']) * 60  # Convert minutes to seconds
-                wThreshold = warningTerms['threshold']
-                wOperator = appOperatorMap[warningTerms['operator']]
-                cThreshold = criticalTerms['threshold']
-                cOperator = appOperatorMap[criticalTerms['operator']]
-                # Don't multiply thresholds by thresholdMultiplier - it's meant for query generation, not threshold calculation
-
-                expr = "({query}) {operator} {threshold}".format(query=query, operator=wOperator, threshold=wThreshold)
-                expr2 = "({query}) {operator} {threshold}".format(query=query, operator=cOperator, threshold=cThreshold)
+            expr = "({query}) {operator} {threshold}".format(query=query, operator=operator, threshold=threshold)
+        elif len(terms) == 2:
+            if terms[0]['priority'] == 'warning':
+                warningTerms = terms[0]
+            elif terms[0]['priority'] == 'critical':
+                criticalTerms = terms[0]
             else:
-                raise ValueError("unhandled len(terms) for condition id " + str(condition["id"]))
+                raise ValueError("unhandled terms.priority for condition id " + str(condition["id"]))
+            if terms[1]['priority'] == 'warning':
+                warningTerms = terms[1]
+            elif terms[1]['priority'] == 'critical':
+                criticalTerms = terms[1]
+            else:
+                raise ValueError("unhandled terms.priority for condition id " + str(condition["id"]))
+            
+            if not warningTerms or not criticalTerms:
+                raise ValueError("unhandled terms for condition id " + str(condition["id"]))
+            
+            forValue = int(warningTerms['duration']) * 60  # Convert minutes to seconds
+            wThreshold = warningTerms['threshold']
+            wOperator = appOperatorMap[warningTerms['operator']]
+            cThreshold = criticalTerms['threshold']
+            cOperator = appOperatorMap[criticalTerms['operator']]
+            # Don't multiply thresholds by thresholdMultiplier - it's meant for query generation, not threshold calculation
 
-            if mode == 'mysql':
-                statement = """INSERT INTO alert_rules
+            expr = "({query}) {operator} {threshold}".format(query=query, operator=wOperator, threshold=wThreshold)
+            expr2 = "({query}) {operator} {threshold}".format(query=query, operator=cOperator, threshold=cThreshold)
+        else:
+            raise ValueError("unhandled len(terms) for condition id " + str(condition["id"]))
+
+        if mode == 'mysql':
+            statement = """INSERT INTO alert_rules
 (account_id, datasource, kind, name, `interval`, expr, expr2, `for`, labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
 VALUES
 (1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 """.format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
-            else:
-                statement = """INSERT INTO alert_rules
+        else:
+            statement = """INSERT INTO alert_rules
 (account_id, datasource, kind, name, "interval", expr, expr2, "for", labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
 VALUES
 (1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 """.format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
-            
-            print(statement)
+        
+        print(statement)
 
 
 def create_argument_parser():
@@ -802,10 +832,10 @@ def configure_parser(
 
 
 def main():
-    parser = create_argument_parser()
-    args = parser.parse_args()
+    # parser = create_argument_parser()
+    # args = parser.parse_args()
     
-    migrate(args.source_account_id[0], args.mode[0])
+    migrate(1642117, "postgresql")
 
 
 def dquote(str):
