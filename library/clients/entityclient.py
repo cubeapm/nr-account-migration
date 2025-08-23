@@ -536,105 +536,117 @@ def get_app_entity(api_key, entity_type, app_id, region=Endpoints.REGION_US):
     logger.info(f"App ID: {app_id}")
     logger.info(f"Region: {region}")
     
+    # Clean the app_id if it has entity- prefix
+    clean_app_id = app_id
+    if str(app_id).startswith('entity-'):
+        clean_app_id = str(app_id).replace('entity-', '')
+        logger.info(f"Cleaned app ID: {clean_app_id} (removed 'entity-' prefix)")
+    
     # Use GraphQL instead of REST API
     graphql_query = '''query PlatformEntitySearchQuery($cursor:String=null$includeCount:Boolean=false$includeResults:Boolean=true$includeSummaryMetrics:Boolean=false$includeTags:Boolean=false$limit:Int=500$nrql:String$sortType:[EntitySearchSortCriteria]=null){actor{entitySearch(query:$nrql sortBy:$sortType options:{limit:$limit}){results(cursor:$cursor)@include(if:$includeResults){entities{...EntityInfo ...EntityTags@include(if:$includeTags)...SummaryMetrics@include(if:$includeSummaryMetrics)...EntityFragmentExtension guid __typename}nextCursor ...SummaryMetricDefinitions@include(if:$includeSummaryMetrics)__typename}count types@include(if:$includeCount){count domain type __typename}__typename}__typename}}fragment EntityInfo on EntityOutline{guid accountId domain type name reporting account{id name __typename}...on AlertableEntityOutline{alertSeverity __typename}__typename}fragment EntityTags on EntityOutline{guid tags{key values __typename}__typename}fragment SummaryMetricDefinitions on EntitySearchResult{entityTypes{domain type summaryMetricDefinitions{name title unit __typename}id __typename}__typename}fragment SummaryMetrics on EntityOutline{guid summaryMetrics{value{...on EntitySummaryNumericMetricValue{numericValue __typename}...on EntitySummaryStringMetricValue{stringValue __typename}__typename}__typename}__typename}fragment EntityFragmentExtension on EntityOutline{guid __typename}'''
     
-    # Build NRQL query to search for the specific entity
-    nrql_query = f"(id IN ('{app_id}'))"
+    # Build NRQL query to search for the specific entity - try multiple approaches
+    nrql_queries = [
+        f"(id IN ('{clean_app_id}'))",
+        f"(guid = '{clean_app_id}')",
+        f"(name LIKE '%{clean_app_id}%')"
+    ]
     
-    variables = {
-        "cursor": None,
-        "includeCount": False,
-        "includeResults": True,
-        "includeSummaryMetrics": False,
-        "includeTags": True,
-        "limit": 500,
-        "nrql": nrql_query,
-        "sortType": None
-    }
-    
-    payload = {
-        "query": graphql_query,
-        "variables": variables
-    }
-    
-    logger.info(f"GraphQL URL: {Endpoints.of(region).GRAPHQL_URL}")
-    logger.info(f"GraphQL Headers: {gql_headers(api_key)}")
-    logger.info(f"GraphQL Payload: {json.dumps(payload, indent=2)}")
-    
-    try:
-        response = requests.post(
-            Endpoints.of(region).GRAPHQL_URL, 
-            json=payload, 
-            headers=gql_headers(api_key)
-        )
+    for nrql_query in nrql_queries:
+        logger.info(f"Trying NRQL query: {nrql_query}")
         
-        logger.info(f"Response Status: {response.status_code}")
-        logger.info(f"Response Headers: {dict(response.headers)}")
-        logger.info(f"Response URL: {response.url}")
-        logger.info(f"Raw Response Text: {response.text}")
+        variables = {
+            "cursor": None,
+            "includeCount": False,
+            "includeResults": True,
+            "includeSummaryMetrics": False,
+            "includeTags": True,
+            "limit": 500,
+            "nrql": nrql_query,
+            "sortType": None
+        }
         
-        result['status'] = response.status_code
+        payload = {
+            "query": graphql_query,
+            "variables": variables
+        }
         
-        if response.status_code != 200:
-            logger.error(f"GraphQL request failed with status {response.status_code}")
-            if response.text:
-                result['error'] = response.text
-                logger.error(f"Error response: {response.text}")
-        else:
-            try:
-                response_json = response.json()
-                logger.info(f"Parsed GraphQL Response: {json.dumps(response_json, indent=2)}")
-                
-                if 'data' in response_json and 'actor' in response_json['data']:
-                    entity_search = response_json['data']['actor']['entitySearch']
-                    logger.info(f"Entity search results: {entity_search}")
+        logger.info(f"GraphQL URL: {Endpoints.of(region).GRAPHQL_URL}")
+        logger.info(f"GraphQL Headers: {gql_headers(api_key)}")
+        logger.info(f"GraphQL Payload: {json.dumps(payload, indent=2)}")
+        
+        try:
+            response = requests.post(
+                Endpoints.of(region).GRAPHQL_URL, 
+                json=payload, 
+                headers=gql_headers(api_key)
+            )
+            
+            logger.info(f"Response Status: {response.status_code}")
+            logger.info(f"Response Headers: {dict(response.headers)}")
+            logger.info(f"Response URL: {response.url}")
+            logger.info(f"Raw Response Text: {response.text}")
+            
+            result['status'] = response.status_code
+            
+            if response.status_code != 200:
+                logger.error(f"GraphQL request failed with status {response.status_code}")
+                if response.text:
+                    result['error'] = response.text
+                    logger.error(f"Error response: {response.text}")
+                continue
+            else:
+                try:
+                    response_json = response.json()
+                    logger.info(f"Parsed GraphQL Response: {json.dumps(response_json, indent=2)}")
                     
-                    if 'results' in entity_search and 'entities' in entity_search['results']:
-                        entities = entity_search['results']['entities']
-                        logger.info(f"Found {len(entities)} entities")
+                    if 'data' in response_json and 'actor' in response_json['data']:
+                        entity_search = response_json['data']['actor']['entitySearch']
+                        logger.info(f"Entity search results: {entity_search}")
                         
-                        if entities:
-                            # Take the first entity found
-                            entity = entities[0]
-                            logger.info(f"✓ Entity found successfully: {entity}")
+                        if 'results' in entity_search and 'entities' in entity_search['results']:
+                            entities = entity_search['results']['entities']
+                            logger.info(f"Found {len(entities)} entities")
                             
-                            # Transform the GraphQL response to match expected format
-                            transformed_entity = {
-                                'guid': entity.get('guid'),
-                                'name': entity.get('name'),
-                                'type': entity.get('type'),
-                                'domain': entity.get('domain'),
-                                'accountId': entity.get('accountId'),
-                                'reporting': entity.get('reporting'),
-                                'tags': entity.get('tags', [])
-                            }
-                            
-                            result['entityFound'] = True
-                            result['entity'] = transformed_entity
-                            logger.info(f"✓ Transformed entity: {transformed_entity}")
+                            if entities:
+                                # Take the first entity found
+                                entity = entities[0]
+                                logger.info(f"✓ Entity found successfully: {entity}")
+                                
+                                # Transform the GraphQL response to match expected format
+                                transformed_entity = {
+                                    'guid': entity.get('guid'),
+                                    'name': entity.get('name'),
+                                    'type': entity.get('type'),
+                                    'domain': entity.get('domain'),
+                                    'accountId': entity.get('accountId'),
+                                    'reporting': entity.get('reporting'),
+                                    'tags': entity.get('tags', [])
+                                }
+                                
+                                result['entityFound'] = True
+                                result['entity'] = transformed_entity
+                                logger.info(f"✓ Transformed entity: {transformed_entity}")
+                                return result  # Success, exit early
+                            else:
+                                logger.warning(f"⚠️ No entities found in search results for query: {nrql_query}")
                         else:
-                            logger.warning(f"⚠️ No entities found in search results")
-                            result['entityFound'] = False
-                            result['error'] = "No entities found in search results"
+                            logger.warning(f"⚠️ No results or entities in response. Available keys: {list(entity_search.keys())}")
                     else:
-                        logger.warning(f"⚠️ No results or entities in response. Available keys: {list(entity_search.keys())}")
-                        result['entityFound'] = False
-                        result['error'] = "No results or entities in response"
-                else:
-                    logger.warning(f"⚠️ No 'data' or 'actor' key found in response. Available keys: {list(response_json.keys())}")
-                    result['entityFound'] = False
-                    result['error'] = "No data or actor key in response"
+                        logger.warning(f"⚠️ No 'data' or 'actor' key found in response. Available keys: {list(response_json.keys())}")
+                        
+                except json.JSONDecodeError as e:
+                    logger.error(f"❌ Failed to parse JSON response: {e}")
+                    logger.error(f"Raw response: {response.text}")
+                    result['error'] = f"JSON parse error: {e}"
                     
-            except json.JSONDecodeError as e:
-                logger.error(f"❌ Failed to parse JSON response: {e}")
-                logger.error(f"Raw response: {response.text}")
-                result['error'] = f"JSON parse error: {e}"
-                
-    except Exception as e:
-        logger.error(f"❌ Exception during GraphQL request: {e}")
-        result['error'] = f"Exception: {e}"
+        except Exception as e:
+            logger.error(f"❌ Exception during GraphQL request: {e}")
+            result['error'] = f"Exception: {e}"
     
+    # If we get here, no entity was found with any query
+    logger.error(f"❌ Entity {app_id} not found with any search method")
+    result['error'] = f"Entity not found with any search method"
     logger.info(f"Final result: {result}")
     logger.info(f"=== END APM ENTITY GRAPHQL DEBUG ===")
     return result

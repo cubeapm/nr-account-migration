@@ -421,7 +421,7 @@ def mapAppCondition(app_condition, all_entities):
                     names.append({'service': 'dummy'})
                 else:
                     try:
-                        filtered_entities = [x for x in all_entities if x['guid'] == guid]
+                        filtered_entities = [x for x in all_entities if (x['guid'] == guid or x['applicationId'] == guid) ]
                     except Exception as e:
                         # If there's an error accessing guid, use the entity ID as fallback
                         filtered_entities = []
@@ -485,7 +485,7 @@ def mapAppCondition(app_condition, all_entities):
                         # Policy-level condition - use dummy service
                         names.append({'service': 'dummy'})
                     else:
-                        filtered_entities = [x for x in all_entities if x['guid'] == guid]
+                        filtered_entities = [x for x in all_entities if (x['guid'] == guid or x['applicationId'] == guid)]
                         if filtered_entities:
                             entity = filtered_entities[0]
                             if entity['entityType'] == 'APM_APPLICATION_ENTITY':
