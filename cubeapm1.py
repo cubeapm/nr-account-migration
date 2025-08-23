@@ -1,13 +1,11 @@
 import os
 import re
-import json
 import requests
 import argparse
 import library.localstore as store
 import library.migrationlogger as logger
 from library.clients.endpoints import Endpoints
 import library.utils as utils
-import library.clients.entityclient as ec
 from pathlib import Path
 
 
@@ -56,23 +54,8 @@ def migrate(
                     logger.error("key transaction not found for guid %s" % guid) 
             else:
                 raise ValueError("unhandled idType " + idType)
-    
-    for i, condition in enumerate(alert_conditions['app']):
-        
-        entity_ids = condition.get('entities', [])
-        logger.info(f"Entity IDs: {entity_ids}")
-        
-        if not entity_ids:
-            logger.info("No entity IDs found, skipping condition")
-            continue
-        
-        for j, entity_id in enumerate(entity_ids):
-            existing_entities = [e for e in entities if e.get('id') == entity_id or e.get('guid') == entity_id or 
-                               e.get('applicationId') == entity_id]
-            if existing_entities:
-                logger.info(f"Entity {entity_id} already exists in base entities list, skipping")
-                continue
-            # fetch entity details
+            
+            # fetch entity details for app alert conditions is already done in app_conditions migrate function
     save_entities_extended(str(src_acct_id), entities)
 
 
