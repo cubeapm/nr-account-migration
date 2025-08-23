@@ -832,10 +832,10 @@ def configure_parser(
 
 
 def main():
-    # parser = create_argument_parser()
-    # args = parser.parse_args()
+    parser = create_argument_parser()
+    args = parser.parse_args()
     
-    migrate(1642117, "postgresql")
+    migrate(args.source_account_id[0], args.mode[0])
 
 
 def dquote(str):
@@ -849,7 +849,7 @@ def squoteSQL(str, mode):
     raise ValueError("invalid mode")
 
 def requote(str_list):
-    return '|'.join([re.escape(x) for x in str_list])
+    return [re.escape(x) for x in str_list].join('|')
 
 
 if __name__ == '__main__':
