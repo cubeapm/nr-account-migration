@@ -49,18 +49,8 @@ def resolveEntityGuids(idType, entry, entries_str, entities):
         entityType = 'APPLICATION'
         for e in entries:
             val = int(e)
-            # More robust entity filtering that handles missing fields and type mismatches
-            _filteredEntities = []
-            for x in entities:
-                if (x.get('entityType') == 'APM_APPLICATION_ENTITY' and 
-                    'applicationId' in x and str(x['applicationId']) == str(val)):
-                    _filteredEntities.append(x)
-            
-            if _filteredEntities:
-                names.append({'service': _filteredEntities[0]['name']})
-            else:
-                # Fallback: use the original app ID as service name
-                names.append({'service': f"app-{val}"})
+            _filteredEntities = [x for x in entities if x['entityType'] == 'APM_APPLICATION_ENTITY' and x['applicationId'] == val]
+            names.append({'service': _filteredEntities[0]['name']})
     elif idType == 'entity.guid':
         for guid in entries:
             _filteredEntities = [x for x in entities if x['guid'] == guid]
@@ -800,7 +790,7 @@ def squoteSQL(str, mode):
     raise ValueError("invalid mode")
 
 def requote(str_list):
-    return '|'.join([re.escape(x) for x in str_list])
+    return [re.escape(x) for x in str_list].join('|')
 
 
 if __name__ == '__main__':
