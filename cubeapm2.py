@@ -124,63 +124,36 @@ def makeEsr(entityType, names):
 
 
 def resolve_entities_to_services(entities, all_entities):
-    """
-    Helper function to resolve entity IDs to service names.
-    Eliminates duplicate code between error_percentage and response_time_percentile conditions.
-    """
     names = []
-    
     if entities:
-        # Entity-specific condition
         for guid in entities:
             if guid == "policy-level":
-                # Policy-level condition - use dummy service
                 names.append({'service': 'dummy'})
             else:
                 try:
-                    # More robust entity filtering that handles missing fields and type mismatches
                     filtered_entities = []
                     for x in all_entities:
-                        # Check if entity has the required fields before accessing them
-                        if 'guid' in x and str(x['guid']) == str(guid):
+                        if 'id' in x and str(x['id']) == str(guid):
                             filtered_entities.append(x)
-                        elif 'id' in x and str(x['id']) == str(guid):
-                            filtered_entities.append(x)
-                        # Also try with the clean entity ID (without 'entity-' prefix)
-                        elif guid.startswith('entity-'):
-                            clean_guid = guid.replace('entity-', '')
-                            if 'guid' in x and str(x['guid']) == str(clean_guid):
-                                filtered_entities.append(x)
-                            elif 'id' in x and str(x['id']) == str(clean_guid):
-                                filtered_entities.append(x)
                 except Exception as e:
-                    # If there's an error accessing fields, use the entity ID as fallback
                     logger.warning(f"Error filtering entities for guid {guid}: {e}")
                     filtered_entities = []
                 
                 if filtered_entities:
                     entity = filtered_entities[0]
                     names.append({'service': entity['name']})
-    
+    # check length here
     if not names:
-        # Fallback to using the original entity IDs
         names = [{'service': f"entity-{guid}"} for guid in entities]
     
     return names
 
 
 def create_service_filter_and_model(names, metric_type, metric_value=None):
-    """
-    Helper function to create service filter and model configuration.
-    Eliminates duplicate code between error_percentage and response_time_percentile conditions.
-    """
-    # Create service filter
     if len(names) == 1:
         fragment = 'service="{}"'.format(dquote(names[0]['service']))
     else:
         fragment = 'service=~"{}"'.format(requote([x['service'] for x in names]))
-    
-    # Create model configuration
     model = {
         "model": {
             "type": "quick",
@@ -458,20 +431,14 @@ def mapAppCondition(app_condition, all_entities):
     metric = app_condition.get('metric', None)  
     entities = app_condition.get('entities', [])
     
-    # If no entities specified, this is a policy-level condition
     if not entities:
         entities = ["policy-level"]
     
     if condition_type == 'apm_app_metric' and metric == 'error_percentage':
-        # Handle error percentage for APM applications
         try:
-            # Get entity information using helper function
             names = resolve_entities_to_services(entities, all_entities)
-            
-            # Create service filter and model using helper function
             fragment, model = create_service_filter_and_model(names, "error_percentage")
             
-            # Create the error percentage query
             spanKind = 'span_kind=~"server|consumer"'
             newQuery = 'sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}, status_code="ERROR"}} default 0)) by (service) * 100 / sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}}} default 0)) by (service)'.format(
                 fragment=fragment, spanKind=spanKind
@@ -483,15 +450,10 @@ def mapAppCondition(app_condition, all_entities):
             return "ERROR", f"Error processing app condition: {ex}", '{}', 1
     
     elif condition_type == 'apm_response_time_percentile':
-        # Handle response time percentile for APM applications
         try:
-            # Get entity information using helper function
             names = resolve_entities_to_services(entities, all_entities)
-            
-            # Create service filter and model using helper function
             fragment, model = create_service_filter_and_model(names, "latency_percentile", app_condition.get('percentile_value', '90'))
             
-            # Create the response time percentile query
             spanKind = 'span_kind=~"server|consumer"'
             newQuery = 'histogram_quantile(0.{percentile}, sum(rate(cube_apm_calls_duration_seconds_bucket{{{fragment}, {spanKind}}}[5m])) by (service, le))'.format(
                 fragment=fragment, spanKind=spanKind, percentile=app_condition.get('percentile_value', '90')
@@ -648,17 +610,15 @@ def migrate(src_acct_id, mode):
         ]})
         repeat_interval = 14400
 
-        # Map app condition to query
         qType, query, config, thresholdMultiplier = mapAppCondition(condition, all_entities)
         if qType in ["UNHANDLED", "ERROR"]:
             name = "[{}] {}".format(qType, name)
 
         terms = condition['terms']
         if len(terms) == 1:
-            forValue = int(terms[0]['duration']) * 60  # Convert minutes to seconds
+            forValue = int(terms[0]['duration']) * 60
             threshold = terms[0]['threshold']
             operator = appOperatorMap[terms[0]['operator']]
-            # Don't multiply threshold by thresholdMultiplier - it's meant for query generation, not threshold calculation
 
             expr = "({query}) {operator} {threshold}".format(query=query, operator=operator, threshold=threshold)
         elif len(terms) == 2:
@@ -678,12 +638,11 @@ def migrate(src_acct_id, mode):
             if not warningTerms or not criticalTerms:
                 raise ValueError("unhandled terms for condition id " + str(condition["id"]))
             
-            forValue = int(warningTerms['duration']) * 60  # Convert minutes to seconds
+            forValue = int(warningTerms['duration']) * 60 
             wThreshold = warningTerms['threshold']
             wOperator = appOperatorMap[warningTerms['operator']]
             cThreshold = criticalTerms['threshold']
             cOperator = appOperatorMap[criticalTerms['operator']]
-            # Don't multiply thresholds by thresholdMultiplier - it's meant for query generation, not threshold calculation
 
             expr = "({query}) {operator} {threshold}".format(query=query, operator=wOperator, threshold=wThreshold)
             expr2 = "({query}) {operator} {threshold}".format(query=query, operator=cOperator, threshold=cThreshold)
