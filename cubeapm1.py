@@ -22,8 +22,13 @@ def migrate(
     src_region: str,
     src_api_key: str,
 ):
+    # Load both entities files - the base one and the extended one
     entities = store.load_json_from_file('output', '%s_entities.json' % str(src_acct_id))
+    entities_extended = store.load_json_from_file('output', '%s_entities_extended.json' % str(src_acct_id))
     alert_conditions = store.load_json_file(src_acct_id, store.ALERT_POLICIES_DIR, 'alert_conditions.json')
+    
+    logger.info(f"Loaded {len(entities)} base entities")
+    logger.info(f"Loaded {len(entities_extended)} extended entities")
 
     # Process NRQL conditions
     for condition in alert_conditions['nrql']:
@@ -79,30 +84,63 @@ def migrate(
         for j, entity_id in enumerate(entity_ids):
             logger.info(f"--- Processing entity {j+1}/{len(entity_ids)}: {entity_id} ---")
             
-            # Check if entity already exists in our list
+            # First check if entity already exists in our base entities list
             existing_entities = [e for e in entities if e.get('id') == entity_id or e.get('guid') == entity_id]
             if existing_entities:
-                logger.info(f"Entity {entity_id} already exists in list, skipping")
+                logger.info(f"Entity {entity_id} already exists in base entities list, skipping")
                 continue
             
-            # not found. fetch.
-            entity_type = utils.get_entity_type(condition)
-            logger.info(f"=== PROCESSING APP CONDITION ===")
-            logger.info(f"Condition: {condition.get('name', 'Unknown')}")
-            logger.info(f"Entity ID: {entity_id}")
-            logger.info(f"Entity Type: {entity_type}")
-            logger.info(f"API Key: {src_api_key[:10]}..." if src_api_key else "None")
-            logger.info(f"Region: {src_region}")
+            # Check if entity exists in extended entities file
+            logger.info(f"Searching for entity {entity_id} in extended entities file...")
+            found_entity = None
             
-            res = get_entity_by_id(entity_id, entity_type, src_api_key, src_region)
-            logger.info(f"Entity lookup result: {res}")
+            for ext_entity in entities_extended:
+                # Check if this entity matches by applicationId (which matches the entity_id from alert conditions)
+                # Handle both string and integer types for applicationId
+                ext_app_id = ext_entity.get('applicationId')
+                if ext_app_id is not None:
+                    if str(ext_app_id) == str(entity_id):
+                        logger.info(f"✓ Found entity {entity_id} in extended entities file by applicationId")
+                        found_entity = ext_entity
+                        break
+                
+                # Also check by guid as fallback
+                elif ext_entity.get('guid') == entity_id:
+                    logger.info(f"✓ Found entity {entity_id} in extended entities file by guid")
+                    found_entity = ext_entity
+                    break
             
-            if res['entityFound'] and res['entity']:
-                entities.append(res['entity'])
-                logger.info(f"✓ Entity added to list")
+            if found_entity:
+                # Transform the extended entity to match the expected format
+                transformed_entity = {
+                    'id': found_entity.get('applicationId'),
+                    'guid': found_entity.get('guid'),
+                    'name': found_entity.get('name'),
+                    'type': found_entity.get('type'),
+                    'domain': found_entity.get('entityType', '').replace('_ENTITY', '').lower(),
+                    'accountId': found_entity.get('accountId'),
+                    'language': found_entity.get('language'),
+                    'tags': found_entity.get('tags', [])
+                }
+                
+                logger.info(f"✓ Transformed entity: {transformed_entity}")
+                entities.append(transformed_entity)
+                logger.info(f"✓ Entity added to base entities list")
             else:
-                logger.error("entity not found for id %s" % entity_id)
-                logger.error(f"Full result: {res}")
+                logger.warning(f"⚠️ Entity {entity_id} not found in extended entities file")
+                logger.warning(f"Available applicationIds: {[e.get('applicationId') for e in entities_extended[:10]]}...")
+                
+                # Fallback: try to fetch via API (but this should rarely happen)
+                logger.info(f"Attempting API fallback for entity {entity_id}...")
+                entity_type = utils.get_entity_type(condition)
+                res = get_entity_by_id(entity_id, entity_type, src_api_key, src_region)
+                logger.info(f"API fallback result: {res}")
+                
+                if res['entityFound'] and res['entity']:
+                    entities.append(res['entity'])
+                    logger.info(f"✓ Entity added via API fallback")
+                else:
+                    logger.error(f"❌ Entity {entity_id} not found via API either")
             
             logger.info(f"=== END APP CONDITION PROCESSING ===")
     
