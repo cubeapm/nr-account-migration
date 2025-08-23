@@ -16,6 +16,15 @@ mapOperator = {
     'EQUALS': '==',
 }
 
+# Add mapping for app condition operators
+appOperatorMap = {
+    'above': '>',
+    'above_or_equals': '>=',
+    'below': '<',
+    'below_or_equals': '<=',
+    'equals': '==',
+}
+
 idRegEx = r"\(?(?P<idType>appId|appName|entity\.guid)\s*(?:=\s*(?P<guid>\d+|(?:'|\")[^'\"]+(?:'|\"))|IN\s*\((?P<guids>[^)]+)\))\)?"
 
 facetOptionalRegEx = r"(?:FACET\s*(?P<facet>appId|appName|entity\.guid|entity\.name))?"
@@ -118,7 +127,7 @@ def makeEsr(entityType, names):
 def mapQuery(query, all_entities):
     # apdex ############################
     res = re.search(
-        r"^\s*SELECT\s+apdex\s*\(apm\.service\.apdex\)\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
+        r"^\s*SELECT\s+apdex\s*\(apm\.service\.apdex\)\s*(?:AS\s*(?:\w+|'[^']*'|\"[^\"]*\"))?\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
         query, flags=re.IGNORECASE
     )
     if res:
@@ -215,7 +224,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
     
     # error rate ############################
     res = re.search(
-        r"^\s*SELECT\s+(?:\()?\s*count\s*\(apm\.(?P<mType>service|key\.transaction)\.error\.count\)\s*/\s*count\s*\(apm\.(?P<mType2>service|key)\.transaction\.duration\)\s*(?:\))?\s*\*\s*100\s+(?:AS\s*(?:\w+|'[^']*'|\"[^\"]*\"))?\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
+        r"^\s*SELECT\s+(?:\()?\s*count\s*\(apm\.(?P<mType>service|key\.transaction)\.error\.count(\['count'\])?\)\s*/\s*count\s*\(apm\.(?P<mType2>service|key)\.transaction\.duration\)\s*(?:\))?\s*\*\s*100\s+(?:AS\s*(?:\w+|'[^']*'|\"[^\"]*\"))?\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
         query, flags=re.IGNORECASE
     )
     if res:
@@ -262,7 +271,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
         r"^\s*SELECT\s+average\s*\(\s*apm\.(?P<mType>service|key)\.(?P<mType2>transaction|datastore)\.duration\s*\)\s*(?P<thousand>\*\s*1000)?\s*(?:AS\s*(?:\w+|'[^']*'|\"[^\"]*\"))?\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + transactionTypeOptionalRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
         query, flags=re.IGNORECASE
     ) or re.search(
-        r"^\s*SELECT\s+average\s*\(\s*convert\s*\(\s*apm\.(?P<mType>service|key)\.(?P<mType2>transaction|datastore)\.duration\s*,\s*unit\s*,\s*(?:'|\")(?P<thousand>ms)(?:'|\")\s*\)\s*\)\s*(?:AS\s*(?:\w+|'[^']*'|\"[^\"]*\"))?\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + transactionTypeOptionalRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
+        r"^\s*SELECT\s+average\s*\(\s*convert\s*\(\s*apm\.(?P<mType>service|key)\.(?P<mType2>transaction|datastore)\.duration\s*,\s*unit\s*,\s*(?:'|\")(?P<thousand>ms)(?:'|\")\s*\)\s*\)\s*\)\s*(?:AS\s*(?:\w+|'[^']*'|\"[^\"]*\"))?\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + transactionTypeOptionalRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
         query, flags=re.IGNORECASE
     ) or re.search(
         r"^\s*FROM\s+(?P<lambdaMarker>AwsLambdaInvocation)\s+SELECT\s+average\s*\(\s*duration\s*\)\s*WHERE\s+aws\.lambda\.arn\s*=\s*['\"]arn:aws:lambda:[\w-]+:\d+:function:(?P<guid>[^'\"]+)['\"]\s*$",
@@ -388,12 +397,171 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
     return "UNHANDLED", query, '{}', 1
 
 
+def mapAppCondition(app_condition, all_entities):
+    """
+    Map app conditions (like apm_app_metric) to Prometheus queries
+    """
+    condition_type = app_condition['type']
+    metric = app_condition.get('metric', None)  # Some conditions don't have metric field
+    entities = app_condition.get('entities', [])  # Some conditions don't have entities field
+    
+    # If no entities specified, this is a policy-level condition
+    if not entities:
+        entities = ["policy-level"]
+    
+    if condition_type == 'apm_app_metric' and metric == 'error_percentage':
+        # Handle error percentage for APM applications
+        try:
+            # Get entity information
+            entity_guids = entities
+            names = []
+            for guid in entity_guids:
+                if guid == "policy-level":
+                    # Policy-level condition - use dummy service
+                    names.append({'service': 'dummy'})
+                else:
+                    try:
+                        filtered_entities = [x for x in all_entities if x['guid'] == guid]
+                    except Exception as e:
+                        # If there's an error accessing guid, use the entity ID as fallback
+                        filtered_entities = []
+                    
+                    if filtered_entities:
+                        entity = filtered_entities[0]
+                        if entity['entityType'] == 'APM_APPLICATION_ENTITY':
+                            names.append({'service': entity['name']})
+                        else:
+                            # Use the original entity ID if type is not supported
+                            names.append({'service': f"entity-{guid}"})
+                    else:
+                        # Use the original entity ID if not found in entities file
+                        names.append({'service': f"entity-{guid}"})
+            
+            if not names:
+                # Fallback to using the original entity IDs
+                names = [{'service': f"entity-{guid}"} for guid in entity_guids]
+            
+            # Create service filter
+            if len(names) == 1:
+                fragment = 'service="{}"'.format(dquote(names[0]['service']))
+            else:
+                fragment = 'service=~"{}"'.format(requote([x['service'] for x in names]))
+            
+            # Create the error percentage query
+            spanKind = 'span_kind=~"server|consumer"'
+            newQuery = 'sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}, status_code="ERROR"}} default 0)) by (service) * 100 / sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}}} default 0)) by (service)'.format(
+                fragment=fragment, spanKind=spanKind
+            )
+            
+            # Create model configuration
+            model = {
+                "model": {
+                    "type": "quick",
+                    "calculate": "error_percentage",
+                    "value": "0",
+                    "labelPairs": [
+                        {"label": "service", "operator": "=" if len(names) == 1 else "=~", "values": [x['service'] for x in names], "options": []}
+                    ],
+                    "groupBy": ["service"],
+                },
+            }
+            
+            return 'ERROR_PERCENTAGE', newQuery, json.dumps(model), 1
+            
+        except Exception as ex:
+            return "ERROR", f"Error processing app condition: {ex}", '{}', 1
+    
+    elif condition_type == 'apm_response_time_percentile':
+        # Handle response time percentile for APM applications
+        try:
+            # Get entity information
+            entity_guids = entities
+            names = []
+            
+            if entity_guids:
+                # Entity-specific condition
+                for guid in entity_guids:
+                    if guid == "policy-level":
+                        # Policy-level condition - use dummy service
+                        names.append({'service': 'dummy'})
+                    else:
+                        filtered_entities = [x for x in all_entities if x['guid'] == guid]
+                        if filtered_entities:
+                            entity = filtered_entities[0]
+                            if entity['entityType'] == 'APM_APPLICATION_ENTITY':
+                                names.append({'service': entity['name']})
+                            else:
+                                # Use the original entity ID if type is not supported
+                                names.append({'service': f"entity-{guid}"})
+                        else:
+                            # Use the original entity ID if not found in entities file
+                            names.append({'service': f"entity-{guid}"})
+                
+                if not names:
+                    # Fallback to using the original entity IDs
+                    names = [{'service': f"entity-{guid}"} for guid in entity_guids]
+                
+                # Create service filter
+                if len(names) == 1:
+                    fragment = 'service="{}"'.format(dquote(names[0]['service']))
+                else:
+                    fragment = 'service=~"{}"'.format(requote([x['service'] for x in names]))
+                
+                # Create model configuration
+                model = {
+                    "model": {
+                        "type": "quick",
+                        "calculate": "latency_percentile",
+                        "value": app_condition.get('percentile_value', '90'),
+                        "labelPairs": [
+                            {"label": "service", "operator": "=" if len(names) == 1 else "=~", "values": [x['service'] for x in names], "options": []}
+                        ],
+                        "groupBy": ["service"],
+                    },
+                }
+            else:
+                # Policy-level condition (no specific entities) - use "dummy" entity
+                fragment = 'service="dummy"'
+                model = {
+                    "model": {
+                        "type": "quick",
+                        "calculate": "latency_percentile",
+                        "value": app_condition.get('percentile_value', '90'),
+                        "labelPairs": [
+                            {"label": "service", "operator": "=", "values": ["dummy"], "options": []}
+                        ],
+                        "groupBy": ["service"],
+                    },
+                }
+            
+            # Get percentile value (default to 90 if not specified)
+            percentile_value = app_condition.get('percentile_value', '90')
+            percentile_decimal = float(percentile_value) / 100.0
+            
+            # Create the response time percentile query
+            spanKind = 'span_kind=~"server|consumer"'
+            newQuery = 'histogram_quantile({percentile}, sum(increase(cube_apm_latency_bucket{{{fragment}, {spanKind}}} default 0)) by (vmrange, service)) * 1000'.format(
+                fragment=fragment, spanKind=spanKind, percentile=percentile_decimal
+            )
+            
+            return 'LATENCY_PERCENTILE', newQuery, json.dumps(model), 1000
+            
+        except Exception as ex:
+            return "ERROR", f"Error processing app condition: {ex}", '{}', 1
+    
+    if metric:
+        return "UNHANDLED", f"Unhandled app condition type: {condition_type}, metric: {metric}", '{}', 1
+    else:
+        return "UNHANDLED", f"Unhandled app condition type: {condition_type}", '{}', 1
+
+
 def migrate(src_acct_id, mode):
     policies_list = store.load_json_file(src_acct_id, store.ALERT_POLICIES_DIR, 'alert_policies.json')
     all_policies = { policy['id'] : policy for policy in policies_list['policies'] }
     all_entities = store.load_json_from_file('output', '%s_entities_extended.json' % str(src_acct_id))
     all_alert_conditions = store.load_json_file(src_acct_id, store.ALERT_POLICIES_DIR, 'alert_conditions.json')
 
+    # Process NRQL conditions
     for condition in all_alert_conditions['nrql']:
         conditionType = condition['type']
         if conditionType not in ['STATIC', 'BASELINE']:
@@ -508,6 +676,98 @@ VALUES
         
         print(statement)
 
+    # Process app conditions
+    if 'app' in all_alert_conditions:
+        for condition in all_alert_conditions['app']:
+            conditionType = 'STATIC'  # App conditions are always static
+            baselineDirection = None
+            
+            datasource = 'prometheus'
+            kind = 'static'
+            name = condition['name']
+            interval = 60  # Default interval for app conditions
+            expr2 = ''
+            # Try to get policy name, but handle cases where policyId is missing
+            policy_name = 'Unknown Policy'
+            if 'policyId' in condition and condition['policyId'] in all_policies:
+                policy_name = all_policies[int(condition['policyId'])]['name']
+            labels = json.dumps({"group": policy_name})
+            annotations = '{}'
+            status = 'ACTIVE' if condition['enabled'] else 'PAUSED'
+            config = '{}'
+            receiver = json.dumps({
+                "email_configs":[],
+                "slack_configs":[],
+                "pagerduty_configs":[],
+                "googlechat_configs":[],
+                "webhook_configs":[
+                    {
+                        "url":"http://localhost",
+                        "type":"webhook",
+                        "send_resolved":True,
+                        "cube_show_query":False,
+                        "valid":True
+                    }
+            ]})
+            repeat_interval = 14400
+
+            # Map app condition to query
+            qType, query, config, thresholdMultiplier = mapAppCondition(condition, all_entities)
+            if qType in ["UNHANDLED", "ERROR"]:
+                name = "[{}] {}".format(qType, name)
+
+            terms = condition['terms']
+            if len(terms) == 1:
+                forValue = int(terms[0]['duration']) * 60  # Convert minutes to seconds
+                threshold = terms[0]['threshold']
+                operator = appOperatorMap[terms[0]['operator']]
+                # Don't multiply threshold by thresholdMultiplier - it's meant for query generation, not threshold calculation
+
+                expr = "({query}) {operator} {threshold}".format(query=query, operator=operator, threshold=threshold)
+            elif len(terms) == 2:
+                if terms[0]['priority'] == 'warning':
+                    warningTerms = terms[0]
+                elif terms[0]['priority'] == 'critical':
+                    criticalTerms = terms[0]
+                else:
+                    raise ValueError("unhandled terms.priority for condition id " + str(condition["id"]))
+                if terms[1]['priority'] == 'warning':
+                    warningTerms = terms[1]
+                elif terms[1]['priority'] == 'critical':
+                    criticalTerms = terms[1]
+                else:
+                    raise ValueError("unhandled terms.priority for condition id " + str(condition["id"]))
+                
+                if not warningTerms or not criticalTerms:
+                    raise ValueError("unhandled terms for condition id " + str(condition["id"]))
+                
+                forValue = int(warningTerms['duration']) * 60  # Convert minutes to seconds
+                wThreshold = warningTerms['threshold']
+                wOperator = appOperatorMap[warningTerms['operator']]
+                cThreshold = criticalTerms['threshold']
+                cOperator = appOperatorMap[criticalTerms['operator']]
+                # Don't multiply thresholds by thresholdMultiplier - it's meant for query generation, not threshold calculation
+
+                expr = "({query}) {operator} {threshold}".format(query=query, operator=wOperator, threshold=wThreshold)
+                expr2 = "({query}) {operator} {threshold}".format(query=query, operator=cOperator, threshold=cThreshold)
+            else:
+                raise ValueError("unhandled len(terms) for condition id " + str(condition["id"]))
+
+            if mode == 'mysql':
+                statement = """INSERT INTO alert_rules
+(account_id, datasource, kind, name, `interval`, expr, expr2, `for`, labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
+VALUES
+(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
+            else:
+                statement = """INSERT INTO alert_rules
+(account_id, datasource, kind, name, "interval", expr, expr2, "for", labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
+VALUES
+(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
+            
+            print(statement)
+
 
 def create_argument_parser():
     parser = argparse.ArgumentParser(
@@ -559,7 +819,7 @@ def squoteSQL(str, mode):
     raise ValueError("invalid mode")
 
 def requote(str_list):
-    return [re.escape(x) for x in str_list].join('|')
+    return '|'.join([re.escape(x) for x in str_list])
 
 
 if __name__ == '__main__':

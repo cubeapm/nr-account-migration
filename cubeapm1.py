@@ -1,11 +1,13 @@
 import os
 import re
+import json
 import requests
 import argparse
 import library.localstore as store
 import library.migrationlogger as logger
 from library.clients.endpoints import Endpoints
 import library.utils as utils
+import library.clients.entityclient as ec
 from pathlib import Path
 
 
@@ -23,6 +25,7 @@ def migrate(
     entities = store.load_json_from_file('output', '%s_entities.json' % str(src_acct_id))
     alert_conditions = store.load_json_file(src_acct_id, store.ALERT_POLICIES_DIR, 'alert_conditions.json')
 
+    # Process NRQL conditions
     for condition in alert_conditions['nrql']:
         res = re.search(guidRegEx, condition['nrql']['query'], flags=re.IGNORECASE)
         if not res:
@@ -46,7 +49,7 @@ def migrate(
             idType = groupdict.get('idType')
 
             if idType == 'appId':
-                raise ValueError("appId not exists")
+                logger.error("AppId not found for guid %s" % guid)
             elif idType == 'entity.guid':
                 res = get_key_transaction_entity(guid, src_api_key, src_region)
                 if res['entityFound'] and res['entity']:
@@ -55,6 +58,56 @@ def migrate(
                     logger.error("key transaction not found for guid %s" % guid) 
             else:
                 raise ValueError("unhandled idType " + idType)
+
+    # Process App conditions
+    logger.info(f"=== PROCESSING APP CONDITIONS ===")
+    logger.info(f"Total app conditions: {len(alert_conditions['app'])}")
+    
+    for i, condition in enumerate(alert_conditions['app']):
+        logger.info(f"--- Processing app condition {i+1}/{len(alert_conditions['app'])} ---")
+        logger.info(f"Condition: {condition.get('name', 'Unknown')}")
+        logger.info(f"Condition type: {condition.get('type', 'Unknown')}")
+        logger.info(f"Full condition: {json.dumps(condition, indent=2)}")
+        
+        entity_ids = condition.get('entities', [])
+        logger.info(f"Entity IDs: {entity_ids}")
+        
+        if not entity_ids:
+            logger.info("No entity IDs found, skipping condition")
+            continue
+        
+        for j, entity_id in enumerate(entity_ids):
+            logger.info(f"--- Processing entity {j+1}/{len(entity_ids)}: {entity_id} ---")
+            
+            # Check if entity already exists in our list
+            existing_entities = [e for e in entities if e.get('id') == entity_id or e.get('guid') == entity_id]
+            if existing_entities:
+                logger.info(f"Entity {entity_id} already exists in list, skipping")
+                continue
+            
+            # not found. fetch.
+            entity_type = utils.get_entity_type(condition)
+            logger.info(f"=== PROCESSING APP CONDITION ===")
+            logger.info(f"Condition: {condition.get('name', 'Unknown')}")
+            logger.info(f"Entity ID: {entity_id}")
+            logger.info(f"Entity Type: {entity_type}")
+            logger.info(f"API Key: {src_api_key[:10]}..." if src_api_key else "None")
+            logger.info(f"Region: {src_region}")
+            
+            res = get_entity_by_id(entity_id, entity_type, src_api_key, src_region)
+            logger.info(f"Entity lookup result: {res}")
+            
+            if res['entityFound'] and res['entity']:
+                entities.append(res['entity'])
+                logger.info(f"✓ Entity added to list")
+            else:
+                logger.error("entity not found for id %s" % entity_id)
+                logger.error(f"Full result: {res}")
+            
+            logger.info(f"=== END APP CONDITION PROCESSING ===")
+    
+    logger.info(f"=== FINISHED PROCESSING APP CONDITIONS ===")
+    logger.info(f"Total entities after processing: {len(entities)}")
 
     save_entities_extended(str(src_acct_id), entities)
 
@@ -109,6 +162,12 @@ def get_key_transaction_entity(guid, src_api_key, src_region):
     else:
         logger.warn('No response for this query response received ' + str(response))
     logger.info('entity match result : ' + str(result))
+    return result
+
+
+def get_entity_by_id(entity_id, entity_type, src_api_key, src_region):
+    """Fetch entity by ID and type using the entity client"""
+    result = ec.get_entity(src_api_key, entity_type, entity_id, src_region)
     return result
 
 
