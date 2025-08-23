@@ -17,55 +17,55 @@ logger = logger.get_logger(os.path.basename(__file__))
 guidRegEx = r"(?P<idType>appId|entity\.guid)\s*(?:=\s*(?P<guid>\d+|(?:'|\")[^'\"]+(?:'|\"))|IN\s*\((?P<guids>[^)]+)\))"
 
 
-def debug_entity_matching(entity_id, entities, entities_extended):
-    """Debug function to help understand entity matching issues"""
-    logger.info(f"=== DEBUG ENTITY MATCHING FOR {entity_id} ===")
+# def debug_entity_matching(entity_id, entities, entities_extended):
+#     """Debug function to help understand entity matching issues"""
+#     logger.info(f"=== DEBUG ENTITY MATCHING FOR {entity_id} ===")
     
-    # Clean entity ID
-    clean_entity_id = entity_id
-    if entity_id.startswith('entity-'):
-        clean_entity_id = entity_id.replace('entity-', '')
-        logger.info(f"Original ID: {entity_id}, Clean ID: {clean_entity_id}")
+#     # Clean entity ID
+#     clean_entity_id = entity_id
+#     if entity_id.startswith('entity-'):
+#         clean_entity_id = entity_id.replace('entity-', '')
+#         logger.info(f"Original ID: {entity_id}, Clean ID: {clean_entity_id}")
     
-    # Check in base entities
-    logger.info(f"Checking base entities ({len(entities)} total)...")
-    base_matches = []
-    for i, entity in enumerate(entities[:10]):  # Check first 10
-        if (entity.get('id') == entity_id or entity.get('guid') == entity_id or
-            entity.get('id') == clean_entity_id or entity.get('guid') == clean_entity_id):
-            base_matches.append(entity)
-            logger.info(f"✓ Base entity match #{i}: {entity}")
+#     # Check in base entities
+#     logger.info(f"Checking base entities ({len(entities)} total)...")
+#     base_matches = []
+#     for i, entity in enumerate(entities[:10]):  # Check first 10
+#         if (entity.get('id') == entity_id or entity.get('guid') == entity_id or
+#             entity.get('id') == clean_entity_id or entity.get('guid') == clean_entity_id):
+#             base_matches.append(entity)
+#             logger.info(f"✓ Base entity match #{i}: {entity}")
     
-    if not base_matches:
-        logger.info("No matches found in base entities")
+#     if not base_matches:
+#         logger.info("No matches found in base entities")
     
-    # Check in extended entities
-    logger.info(f"Checking extended entities ({len(entities_extended)} total)...")
-    ext_matches = []
-    for i, entity in enumerate(entities_extended[:20]):  # Check first 20
-        ext_app_id = entity.get('applicationId')
-        ext_guid = entity.get('guid')
-        ext_name = entity.get('name')
+#     # Check in extended entities
+#     logger.info(f"Checking extended entities ({len(entities_extended)} total)...")
+#     ext_matches = []
+#     for i, entity in enumerate(entities_extended[:20]):  # Check first 20
+#         ext_app_id = entity.get('applicationId')
+#         ext_guid = entity.get('guid')
+#         ext_name = entity.get('name')
         
-        if (ext_app_id and (str(ext_app_id) == str(entity_id) or str(ext_app_id) == str(clean_entity_id))):
-            ext_matches.append(('applicationId', entity))
-            logger.info(f"✓ Extended entity match by applicationId #{i}: {entity}")
-        elif (ext_guid and (ext_guid == entity_id or ext_guid == clean_entity_id)):
-            ext_matches.append(('guid', entity))
-            logger.info(f"✓ Extended entity match by guid #{i}: {entity}")
-        elif (ext_name and clean_entity_id in str(ext_name)):
-            ext_matches.append(('name', entity))
-            logger.info(f"✓ Extended entity match by name #{i}: {entity}")
+#         if (ext_app_id and (str(ext_app_id) == str(entity_id) or str(ext_app_id) == str(clean_entity_id))):
+#             ext_matches.append(('applicationId', entity))
+#             logger.info(f"✓ Extended entity match by applicationId #{i}: {entity}")
+#         elif (ext_guid and (ext_guid == entity_id or ext_guid == clean_entity_id)):
+#             ext_matches.append(('guid', entity))
+#             logger.info(f"✓ Extended entity match by guid #{i}: {entity}")
+#         elif (ext_name and clean_entity_id in str(ext_name)):
+#             ext_matches.append(('name', entity))
+#             logger.info(f"✓ Extended entity match by name #{i}: {entity}")
     
-    if not ext_matches:
-        logger.info("No matches found in extended entities")
-        # Show some sample entities for debugging
-        logger.info("Sample extended entities:")
-        for i, entity in enumerate(entities_extended[:5]):
-            logger.info(f"  #{i}: applicationId={entity.get('applicationId')}, guid={entity.get('guid')}, name={entity.get('name')}")
+#     if not ext_matches:
+#         logger.info("No matches found in extended entities")
+#         # Show some sample entities for debugging
+#         logger.info("Sample extended entities:")
+#         for i, entity in enumerate(entities_extended[:5]):
+#             logger.info(f"  #{i}: applicationId={entity.get('applicationId')}, guid={entity.get('guid')}, name={entity.get('name')}")
     
-    logger.info(f"=== END DEBUG ENTITY MATCHING ===")
-    return base_matches, ext_matches
+#     logger.info(f"=== END DEBUG ENTITY MATCHING ===")
+#     return base_matches, ext_matches
 
 
 def migrate(
@@ -75,11 +75,11 @@ def migrate(
 ):
     # Load both entities files - the base one and the extended one
     entities = store.load_json_from_file('output', '%s_entities.json' % str(src_acct_id))
-    entities_extended = store.load_json_from_file('output', '%s_entities_extended.json' % str(src_acct_id))
+    # entities_extended = store.load_json_from_file('output', '%s_entities_extended.json' % str(src_acct_id))
     alert_conditions = store.load_json_file(src_acct_id, store.ALERT_POLICIES_DIR, 'alert_conditions.json')
     
     logger.info(f"Loaded {len(entities)} base entities")
-    logger.info(f"Loaded {len(entities_extended)} extended entities")
+    # logger.info(f"Loaded {len(entities_extended)} extended entities")
 
     # Process NRQL conditions
     for condition in alert_conditions['nrql']:
@@ -115,15 +115,15 @@ def migrate(
             else:
                 raise ValueError("unhandled idType " + idType)
 
-    # Process App conditions
-    logger.info(f"=== PROCESSING APP CONDITIONS ===")
-    logger.info(f"Total app conditions: {len(alert_conditions['app'])}")
+    # # Process App conditions
+    # logger.info(f"=== PROCESSING APP CONDITIONS ===")
+    # logger.info(f"Total app conditions: {len(alert_conditions['app'])}")
     
     for i, condition in enumerate(alert_conditions['app']):
-        logger.info(f"--- Processing app condition {i+1}/{len(alert_conditions['app'])} ---")
-        logger.info(f"Condition: {condition.get('name', 'Unknown')}")
-        logger.info(f"Condition type: {condition.get('type', 'Unknown')}")
-        logger.info(f"Full condition: {json.dumps(condition, indent=2)}")
+        # logger.info(f"--- Processing app condition {i+1}/{len(alert_conditions['app'])} ---")
+        # logger.info(f"Condition: {condition.get('name', 'Unknown')}")
+        # logger.info(f"Condition type: {condition.get('type', 'Unknown')}")
+        # logger.info(f"Full condition: {json.dumps(condition, indent=2)}")
         
         entity_ids = condition.get('entities', [])
         logger.info(f"Entity IDs: {entity_ids}")
@@ -133,10 +133,10 @@ def migrate(
             continue
         
         for j, entity_id in enumerate(entity_ids):
-            logger.info(f"--- Processing entity {j+1}/{len(entity_ids)}: {entity_id} ---")
+            # logger.info(f"--- Processing entity {j+1}/{len(entity_ids)}: {entity_id} ---")
             
-            # Debug entity matching first
-            debug_entity_matching(entity_id, entities, entities_extended)
+            # # Debug entity matching first
+            # debug_entity_matching(entity_id, entities, entities_extended)
             
             # Handle entity IDs with 'entity-' prefix
             # clean_entity_id = entity_id
