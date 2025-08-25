@@ -313,7 +313,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
         r"^\s*SELECT\s+average\s*\(\s*apm\.(?P<mType>service|key)\.(?P<mType2>transaction|datastore)\.duration\s*\)\s*(?P<thousand>\*\s*1000)?\s*(?:AS\s*(?:\w+|'[^']*'|\"[^\"]*\"))?\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + transactionTypeOptionalRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
         query, flags=re.IGNORECASE
     ) or re.search(
-        r"^\s*SELECT\s+average\s*\(\s*convert\s*\(\s*apm\.(?P<mType>service|key)\.(?P<mType2>transaction|datastore)\.duration\s*,\s*unit\s*,\s*(?:'|\")(?P<thousand>ms)(?:'|\")\s*\)\s*\)\s*\)\s*(?:AS\s*(?:\w+|'[^']*'|\"[^\"]*\"))?\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + transactionTypeOptionalRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
+        r"^\s*SELECT\s+average\s*\(\s*convert\s*\(\s*apm\.(?P<mType>service|key)\.(?P<mType2>transaction|datastore)\.duration\s*,\s*unit\s*,\s*(?:'|\")(?P<thousand>ms)(?:'|\")\s*\)\s*\)\s*(?:AS\s*(?:\w+|'[^']*'|\"[^\"]*\"))?\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + transactionTypeOptionalRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
         query, flags=re.IGNORECASE
     ) or re.search(
         r"^\s*FROM\s+(?P<lambdaMarker>AwsLambdaInvocation)\s+SELECT\s+average\s*\(\s*duration\s*\)\s*WHERE\s+aws\.lambda\.arn\s*=\s*['\"]arn:aws:lambda:[\w-]+:\d+:function:(?P<guid>[^'\"]+)['\"]\s*$",
@@ -574,7 +574,18 @@ def migrate(src_acct_id, mode):
         else:
             raise ValueError("unhandled len(terms) for condition id " + condition["id"])
 
-        statement = generate_alert_rules_insert(datasource, kind, name, interval, expr, expr2, forValue, labels, annotations, status, config, receiver, repeat_interval, mode)
+        if mode == 'mysql':
+            statement = """INSERT INTO alert_rules
+(account_id, datasource, kind, name, `interval`, expr, expr2, `for`, labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
+VALUES
+(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
+        else:
+            statement = """INSERT INTO alert_rules
+(account_id, datasource, kind, name, "interval", expr, expr2, "for", labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
+VALUES
+(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
         
         print(statement)
 
@@ -649,7 +660,18 @@ def migrate(src_acct_id, mode):
         else:
             raise ValueError("unhandled len(terms) for condition id " + str(condition["id"]))
 
-        statement = generate_alert_rules_insert(datasource, kind, name, interval, expr, expr2, forValue, labels, annotations, status, config, receiver, repeat_interval, mode)
+        if mode == 'mysql':
+            statement = """INSERT INTO alert_rules
+(account_id, datasource, kind, name, `interval`, expr, expr2, `for`, labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
+VALUES
+(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
+        else:
+            statement = """INSERT INTO alert_rules
+(account_id, datasource, kind, name, "interval", expr, expr2, "for", labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
+VALUES
+(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
         
         print(statement)
 
@@ -707,14 +729,14 @@ def requote(str_list):
     return [re.escape(x) for x in str_list].join('|')
 
 
-def generate_alert_rules_insert(datasource, kind, name, interval, expr, expr2, forValue, labels, annotations, status, config, receiver, repeat_interval, mode):
-    interval_quote = '`' if mode == 'mysql' else '"'
+# def generate_alert_rules_insert(datasource, kind, name, interval, expr, expr2, forValue, labels, annotations, status, config, receiver, repeat_interval, mode):
+#     interval_quote = '`' if mode == 'mysql' else '"'
     
-    return """INSERT INTO alert_rules
-(account_id, datasource, kind, name, {interval_quote}interval{interval_quote}, expr, expr2, {interval_quote}for{interval_quote}, labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
-VALUES
-(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-""".format(interval_quote, interval_quote, datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
+#     return """INSERT INTO alert_rules
+# (account_id, datasource, kind, name, {interval_quote}interval{interval_quote}, expr, expr2, {interval_quote}for{interval_quote}, labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
+# VALUES
+# (1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+# """.format(interval_quote, interval_quote, datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
 
 
 if __name__ == '__main__':
