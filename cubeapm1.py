@@ -46,7 +46,8 @@ def migrate(
             idType = groupdict.get('idType')
 
             if idType == 'appId':
-                raise ValueError("appId not exists")
+                # raise ValueError("appId not exists")
+                pass
             elif idType == 'entity.guid':
                 res = get_key_transaction_entity(guid, src_api_key, src_region)
                 if res['entityFound'] and res['entity']:

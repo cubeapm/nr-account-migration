@@ -14,11 +14,17 @@ mapOperator = {
     'BELOW': '<',
     'BELOW_OR_EQUALS': '<=',
     'EQUALS': '==',
+
+    'above': '>',
+    'above_or_equals': '>=',
+    'below': '<',
+    'below_or_equals': '<=',
+    'equals': '==',
 }
 
-idRegEx = r"\(?(?P<idType>appId|appName|entity\.guid)\s*(?:=\s*(?P<guid>\d+|(?:'|\")[^'\"]+(?:'|\"))|IN\s*\((?P<guids>[^)]+)\))\)?"
+idRegEx = r"\(?\`?(?P<idType>appId|appName|entity\.guid|entityGuid)\`?\s*(?:=\s*(?P<guid>\d+|(?:'|\")[^'\"]+(?:'|\"))|IN\s*\((?P<guids>[^)]+)\))\)?"
 
-facetOptionalRegEx = r"(?:FACET\s*(?P<facet>appId|appName|entity\.guid|entity\.name))?"
+facetOptionalRegEx = r"(?:FACET\s*\`?(?P<facet>appId|appName|entity\.guid|entity\.name)\`?)?"
 
 transactionTypeOptionalRegEx = r"(?:(?:AND\s*)?\(?\s*transactionType\s*=\s*(?:'|\")(?P<transactionType>\w+)(?:'|\")\s*\)?\s*)?"
 
@@ -33,6 +39,7 @@ def resolveEntityGuids(idType, entry, entries_str, entities):
     
     entityType = None
     names = []
+    isUnResolvedGUID = False
     if idType == 'appName':
         entityType = 'APPLICATION'
         names = [{'service': x} for x in entries]
@@ -41,12 +48,26 @@ def resolveEntityGuids(idType, entry, entries_str, entities):
         for e in entries:
             val = int(e)
             _filteredEntities = [x for x in entities if x['entityType'] == 'APM_APPLICATION_ENTITY' and x['applicationId'] == val]
+            if not _filteredEntities:
+                # raise ValueError("entity not found for appId %s" % e)
+                # Keep appId instead of raising error, so that we can translate the query
+                entityType = 'APPLICATION'
+                isUnResolvedGUID = True
+                names.append({'service': e})
+                continue
             names.append({'service': _filteredEntities[0]['name']})
-    elif idType == 'entity.guid':
+    elif idType == 'entity.guid' or idType == 'entityGuid':
         for guid in entries:
             _filteredEntities = [x for x in entities if x['guid'] == guid]
             if not _filteredEntities:
-                raise ValueError("entity not found for guid %s" % guid)
+                # raise ValueError("entity not found for guid %s" % guid)
+                # Keep guid instead of raising error, so that we can translate the query
+                # Note: our assumption that entityType = 'APPLICATION' isn't safe
+                entityType = 'APPLICATION'
+                isUnResolvedGUID = True
+                names.append({'service': guid})
+                continue
+
             entity = _filteredEntities[0]
             if not entityType:
                 entityType = entity['type']
@@ -64,7 +85,7 @@ def resolveEntityGuids(idType, entry, entries_str, entities):
     
     if not names:
         raise ValueError("empty names")
-    return entityType, names
+    return entityType, names, isUnResolvedGUID
 
 
 def parseFacet(entityType, facet):
@@ -114,20 +135,19 @@ def makeEsr(entityType, names):
     return fragment, labelPairs
 
 
-# TODO properly handle facet in apdex, latency_average, and latency_percentile
-def mapQuery(query, all_entities):
+def mapQuery(query, all_entities, compat):
     # apdex ############################
     res = re.search(
-        r"^\s*SELECT\s+apdex\s*\(apm\.service\.apdex\)\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
+        r"^\s*SELECT\s+apdex\s*\(\`?apm\.service\.apdex\`?\)\s*(?:AS\s*(?:\w+|'[^']*'|\"[^\"]*\"))?\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
         query, flags=re.IGNORECASE
     )
     if res:
         groupdict = res.groupdict()
         
         try:
-            entityType, names = resolveEntityGuids(groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities)
+            entityType, names, isUnResolvedGUID = resolveEntityGuids(groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities)
         except Exception as ex:
-            return "ERROR", "%s # %s" % (query, ex), '{}', 1
+            return "ERROR", "# %s\n%s" % (ex, query), '{}', 1
 
         if entityType != "APPLICATION":
             raise ValueError("unhandled entity type " + entityType)
@@ -136,20 +156,27 @@ def mapQuery(query, all_entities):
 
         spanKind = 'span_kind=~"server|consumer"'
 
+        groupBy = parseFacet(entityType, groupdict.get('facet'))
+        groupByStr = ' by ({})'.format(','.join(groupBy)) if groupBy else ''
+        groupByWithVmrange = groupBy + ['vmrange']
+        groupByWithVmrangeStr = ' by ({})'.format(','.join(groupByWithVmrange))
+
         # https://docs.newrelic.com/docs/apm/new-relic-apm/apdex/apdex-measure-user-satisfaction/#apdex-counts
         # Note: We hard-code apdex_t=0.5 here, which is NewRelic's default value.
         # Note: histogram_share(2.0, ...) will include histogram_share(0.5, ...) as well,
         # so we take only half of histogram_share(0.5, ...).
         newQuery = """0.5 *
 (
-histogram_share(0.5, sum by (service,vmrange) (increase(cube_apm_latency_bucket{{{fragment}, {spanKind}, status_code!="ERROR"}} default 0)))
+histogram_share(0.5, sum{groupByWithVmrange} (increase(cube_apm_latency_bucket{{{fragment}, {spanKind}, status_code!="ERROR"}} default 0)))
 +
-histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{{{fragment}, {spanKind}, status_code!="ERROR"}} default 0)))
+histogram_share(2.0, sum{groupByWithVmrange} (increase(cube_apm_latency_bucket{{{fragment}, {spanKind}, status_code!="ERROR"}} default 0)))
 )
-* sum by (service) (increase(cube_apm_latency_count{{{fragment}, {spanKind}, status_code!="ERROR"}} default 0))
-/ sum by (service) (increase(cube_apm_latency_count{{{fragment}, {spanKind}}} default 0))""".format(fragment=fragment, spanKind=spanKind)
+* sum{groupBy} (increase(cube_apm_latency_count{{{fragment}, {spanKind}, status_code!="ERROR"}} default 0))
+/ sum{groupBy} (increase(cube_apm_latency_count{{{fragment}, {spanKind}}} default 0))""".format(fragment=fragment, spanKind=spanKind, groupBy=groupByStr, groupByWithVmrange=groupByWithVmrangeStr)
 
         # print(newQuery)
+        if isUnResolvedGUID:
+            return 'GUID', newQuery, '{}', 1
         return 'APDEX', newQuery, '{}', 1
     
     # request_count ############################
@@ -161,9 +188,9 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
         groupdict = res.groupdict()
 
         try:
-            entityType, names = resolveEntityGuids(groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities)
+            entityType, names, isUnResolvedGUID = resolveEntityGuids(groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities)
         except Exception as ex:
-            return "ERROR", "%s # %s" % (query, ex), '{}', 1
+            return "ERROR", "# %s\n%s" % (ex, query), '{}', 1
 
         if entityType == "APPLICATION":
             if groupdict.get('mType') != 'service':
@@ -211,20 +238,27 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
             newQuery = 'sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}}} default 0)){groupBy}'.format(fragment=fragment, spanKind=spanKind, groupBy=groupByStr)
         
         # print(newQuery)
+        if isUnResolvedGUID:
+            return 'GUID', newQuery, json.dumps(model), 1
         return 'REQUEST_COUNT', newQuery, json.dumps(model), 1
     
     # error rate ############################
     res = re.search(
-        r"^\s*SELECT\s+(?:\()?\s*count\s*\(apm\.(?P<mType>service|key\.transaction)\.error\.count\)\s*/\s*count\s*\(apm\.(?P<mType2>service|key)\.transaction\.duration\)\s*(?:\))?\s*\*\s*100\s+(?:AS\s*(?:\w+|'[^']*'|\"[^\"]*\"))?\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
+        r"^\s*SELECT\s+(?:\()?\s*count\s*\(apm\.(?P<mType>service|key\.transaction)\.error\.count\)\s*(?P<hundred1>\*\s*100)?\s*/\s*count\s*\(apm\.(?P<mType2>service|key)\.transaction\.duration\)\s*(?:\))?\s*(?P<hundred2>\*\s*100)?\s*(?:AS\s*(?:\w+|'[^']*'|\"[^\"]*\"))?\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + transactionTypeOptionalRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
+        query, flags=re.IGNORECASE
+    ) or re.search(
+        r"^\s*SELECT\s+(?:\()?\s*sum\s*\(apm\.(?P<mType>service|key\.transaction)\.error\.count(\['count'\])?\)\s*(?P<hundred1>\*\s*100)?\s*/\s*count\s*\(apm\.(?P<mType2>service|key)\.transaction\.duration\)\s*(?:\))?\s*(?P<hundred2>\*\s*100)?\s*(?:AS\s*(?:\w+|'[^']*'|\"[^\"]*\"))?\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + transactionTypeOptionalRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
         query, flags=re.IGNORECASE
     )
     if res:
         groupdict = res.groupdict()
 
+        thresholdMultiplier = 1 if groupdict.get('hundred1') or groupdict.get('hundred2') else 100
+
         try:
-            entityType, names = resolveEntityGuids(groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities)
+            entityType, names, isUnResolvedGUID = resolveEntityGuids(groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities)
         except Exception as ex:
-            return "ERROR", "%s # %s" % (query, ex), '{}', 1
+            return "ERROR", "# %s\n%s" % (ex, query), '{}', 1
 
         if entityType == "APPLICATION":
             if groupdict.get('mType') != 'service' or groupdict.get('mType2') != 'service':
@@ -252,10 +286,64 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
             },
         }
 
+        transactionType = groupdict.get('transactionType')
+        if transactionType:
+            model = {}
+            if transactionType == 'Web':
+                fragment += ', root_name=~"WebTransaction/.*"'
+            elif transactionType == 'Other':
+                fragment += ', root_name=~"OtherTransaction/.*"'
+            else:
+                raise ValueError("unhandled transactionType " + transactionType)
+
         newQuery = 'sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}, status_code="ERROR"}} default 0)){groupBy} * 100 / sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}}} default 0)){groupBy}'.format(fragment=fragment, spanKind=spanKind, groupBy=groupByStr)
         
         # print(newQuery)
-        return 'ERROR_PERCENTAGE', newQuery, json.dumps(model), 1
+        if isUnResolvedGUID:
+            return 'GUID', newQuery, json.dumps(model), thresholdMultiplier
+        return 'ERROR_PERCENTAGE', newQuery, json.dumps(model), thresholdMultiplier
+    
+    # error count ############################
+    res = re.search(
+        r"^\s*SELECT\s+count\(\*\)\s*FROM\s+TransactionError\s+WHERE\s+" + idRegEx + r"\s*" + r"AND\s*\(`error.expected` IS FALSE OR `error.expected` IS NULL\) AND (?:http\.statusCode|response\.status|httpResponseCode)\s*>=\s*'?500'? EXTRAPOLATE",
+        query, flags=re.IGNORECASE
+    )
+    if res:
+        groupdict = res.groupdict()
+
+        try:
+            entityType, names, isUnResolvedGUID = resolveEntityGuids(groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities)
+        except Exception as ex:
+            return "ERROR", "# %s\n%s" % (ex, query), '{}', 1
+
+        if entityType != "APPLICATION" and entityType != "KEY_TRANSACTION":
+            raise ValueError("unhandled entity type " + entityType)
+
+        fragment, labelPairs = makeEsr(entityType, names)
+        
+        spanKind = 'span_kind=~"server|consumer"'
+        
+        groupBy = parseFacet(entityType, groupdict.get('facet'))
+        groupByStr = ' by ({})'.format(','.join(groupBy)) if groupBy else ''
+
+        model = {}
+
+        httpCodeType = '500' # groupdict.get('httpCodeType')
+        if httpCodeType:
+            model = {}
+            if httpCodeType == '500':
+                fragment += ', http_code=~"5.*"'
+            else:
+                raise ValueError("unhandled httpCodeType " + httpCodeType)
+
+        metric = 'cube_apm_errors_total' if compat == 'legacy' else 'cube_apm_calls_total'
+
+        newQuery = 'sum(increase({metric}{{{fragment}, {spanKind}, status_code="ERROR"}} default 0)){groupBy}'.format(metric=metric, fragment=fragment, spanKind=spanKind, groupBy=groupByStr)
+        
+        # print(newQuery)
+        if isUnResolvedGUID:
+            return 'GUID', newQuery, json.dumps(model), 1
+        return 'ERROR_COUNT', newQuery, json.dumps(model), 1
     
     # avg latency ############################
     res = re.search(
@@ -275,9 +363,9 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
         thresholdMultiplier = 1 if groupdict.get('thousand') else 1000
 
         try:
-            entityType, names = resolveEntityGuids('appName' if groupdict.get('lambdaMarker') else groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities)
+            entityType, names, isUnResolvedGUID = resolveEntityGuids('appName' if groupdict.get('lambdaMarker') else groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities)
         except Exception as ex:
-            return "ERROR", "%s # %s" % (query, ex), '{}', 1
+            return "ERROR", "# %s\n%s" % (ex, query), '{}', 1
 
         if entityType == "APPLICATION":
             if mType != 'service':
@@ -293,6 +381,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
         spanKind = 'span_kind=~"server|consumer"'
 
         groupBy = parseFacet(entityType, 'appName' if groupdict.get('lambdaMarker') else groupdict.get('facet'))
+        groupByStr = ' by ({})'.format(','.join(groupBy)) if groupBy else ''
 
         model = {
             "model": {
@@ -322,10 +411,11 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
             else:
                 raise ValueError("unhandled transactionType " + transactionType)
         
-        groupByStr = ' by ({})'.format(','.join(groupBy)) if groupBy else ''
         newQuery = 'sum(increase(cube_apm_latency_sum{{{fragment}, {spanKind}}} default 0)){groupBy} * 1000 / sum(increase(cube_apm_latency_count{{{fragment}, {spanKind}}} default 0)){groupBy}'.format(fragment=fragment, spanKind=spanKind, groupBy=groupByStr)
         
         # print(newQuery)
+        if isUnResolvedGUID:
+            return 'GUID', newQuery, json.dumps(model), thresholdMultiplier
         return 'LATENCY_AVERAGE', newQuery, json.dumps(model), thresholdMultiplier
     
     # percentile latency ############################
@@ -339,9 +429,9 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
         thresholdMultiplier = 1000
 
         try:
-            entityType, names = resolveEntityGuids(groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities)
+            entityType, names, isUnResolvedGUID = resolveEntityGuids(groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities)
         except Exception as ex:
-            return "ERROR", "%s # %s" % (query, ex), '{}', 1
+            return "ERROR", "# %s\n%s" % (ex, query), '{}', 1
 
         if entityType != "APPLICATION":
             raise ValueError("unhandled entity type " + entityType)
@@ -349,6 +439,11 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
         fragment, labelPairs = makeEsr(entityType, names)
 
         spanKind = 'span_kind=~"server|consumer"'
+
+        groupBy = parseFacet(entityType, groupdict.get('facet'))
+        # groupByStr = ' by ({})'.format(','.join(groupBy)) if groupBy else ''
+        groupByWithVmrange = groupBy + ['vmrange']
+        groupByWithVmrangeStr = ' by ({})'.format(','.join(groupByWithVmrange))
 
         percentile = groupdict['percentile']
 
@@ -358,7 +453,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
                 "calculate": "latency_percentile",
                 "value": percentile,
                 "labelPairs": labelPairs,
-                "groupBy": ['service'],
+                "groupBy": groupBy,
             },
         }
 
@@ -372,9 +467,12 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
             else:
                 raise ValueError("unhandled transactionType " + transactionType)
         
-        newQuery = 'histogram_quantile({percentile}/100, sum(increase(cube_apm_latency_bucket{{{fragment}, {spanKind}}} default 0)) by (vmrange, service)) * 1000'.format(fragment=fragment, spanKind=spanKind, percentile=percentile)
+        newQuery = 'histogram_quantile({percentile}/100, sum(increase(cube_apm_latency_bucket{{{fragment}, {spanKind}}} default 0)){groupByWithVmrange}) * 1000'.format(fragment=fragment, spanKind=spanKind, percentile=percentile, groupByWithVmrange=groupByWithVmrangeStr)
         
         # print(newQuery)
+
+        if isUnResolvedGUID:
+            return 'GUID', newQuery, json.dumps(model), thresholdMultiplier
         return 'LATENCY_PERCENTILE', newQuery, json.dumps(model), thresholdMultiplier
 
     # AWS metrics ############################
@@ -388,7 +486,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
     return "UNHANDLED", query, '{}', 1
 
 
-def migrate(src_acct_id, mode):
+def migrate(src_acct_id, compat, mode):
     policies_list = store.load_json_file(src_acct_id, store.ALERT_POLICIES_DIR, 'alert_policies.json')
     all_policies = { policy['id'] : policy for policy in policies_list['policies'] }
     all_entities = store.load_json_from_file('output', '%s_entities_extended.json' % str(src_acct_id))
@@ -432,8 +530,8 @@ def migrate(src_acct_id, mode):
         repeat_interval = 14400
 
         query = condition['nrql']['query']
-        qType, query, config, thresholdMultiplier = mapQuery(query, all_entities)
-        if qType in ["UNHANDLED", "ERROR"]:
+        qType, query, config, thresholdMultiplier = mapQuery(query, all_entities, compat)
+        if qType in ["UNHANDLED", "ERROR", "GUID"]:
             name = "[{}] {}".format(qType, name)
 
         terms = condition['terms']
@@ -508,6 +606,167 @@ VALUES
         
         print(statement)
 
+    print('\n\n-- app conditions --\n\n')
+    for condition in all_alert_conditions['app']:
+        datasource = 'prometheus'
+        kind = 'static'
+        name = condition['name']
+        interval = 60
+        # expr = condition['nrql']['query']
+        expr2 = ''
+        # forValue = condition['terms']['duration'] * 60
+        labels = json.dumps({"group": 'Default Group'}) # we don't get policy info in app alert conditions
+        annotations = '{}'
+        status = 'ACTIVE' if condition['enabled'] else 'PAUSED'
+        config = '{}'
+        receiver = json.dumps({
+            "email_configs":[],
+            "slack_configs":[],
+            "pagerduty_configs":[],
+            "googlechat_configs":[],
+            "webhook_configs":[
+                {
+                    "url":"http://localhost",
+                    "type":"webhook",
+                    "send_resolved":True,
+                    "cube_show_query":False,
+                    "valid":True
+                }
+        ]})
+        repeat_interval = 14400
+
+        entities = condition.get('entities')
+        if not entities:
+            print('-- unhandled app alert: ' + name)
+            continue
+
+        # try:
+        entityType, names, isUnResolvedGUID = resolveEntityGuids('appId', None, ','.join(entities), all_entities)
+        # except Exception as ex:
+            # return "ERROR", "# %s\n%s" % (ex, query), '{}', 1
+
+        type = condition['type']
+        metric = condition.get('metric')
+
+        if type == 'apm_app_metric':
+            if metric == 'error_percentage':
+                if entityType != "APPLICATION":
+                    raise ValueError("unhandled situation in app alert: " + condition['id'])
+
+                fragment, labelPairs = makeEsr(entityType, names)
+                
+                spanKind = 'span_kind=~"server|consumer"'
+                
+                groupBy = ['service']
+                groupByStr = ' by ({})'.format(','.join(groupBy)) if groupBy else ''
+                
+                model = {
+                    "model": {
+                        "type": "quick",
+                        "calculate": "error_percentage",
+                        "value": "0",
+                        "labelPairs": labelPairs,
+                        "groupBy": groupBy,
+                    },
+                }
+
+                query = 'sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}, status_code="ERROR"}} default 0)){groupBy} * 100 / sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}}} default 0)){groupBy}'.format(fragment=fragment, spanKind=spanKind, groupBy=groupByStr)
+                
+                # print(query)
+                if isUnResolvedGUID:
+                    name = "[GUID] {}".format(name)
+
+                config = json.dumps(model)
+            else:
+                print('-- unhandled app alert: ' + name)
+                continue
+        elif type == 'apm_app_metric_baseline':
+            print('-- unhandled app alert: ' + name)
+            continue
+        elif type == 'apm_kt_metric':
+            print('-- unhandled app alert: ' + name)
+            continue
+        elif type == 'apm_response_time_percentile':
+            if entityType != "APPLICATION":
+                raise ValueError("unhandled situation in app alert: " + condition['id'])
+                
+            fragment, labelPairs = makeEsr(entityType, names)
+
+            spanKind = 'span_kind=~"server|consumer"'
+
+            groupBy = ['service']
+            # groupByStr = ' by ({})'.format(','.join(groupBy)) if groupBy else ''
+            groupByWithVmrange = groupBy + ['vmrange']
+            groupByWithVmrangeStr = ' by ({})'.format(','.join(groupByWithVmrange))
+
+            percentile = condition['percentile_value']
+
+            # transactionType = 'Web'
+            model = {}
+            fragment += ', root_name=~"WebTransaction/.*"'
+
+            # do not multiply by 1000 as the threshold is in seconds
+            query = 'histogram_quantile({percentile}/100, sum(increase(cube_apm_latency_bucket{{{fragment}, {spanKind}}} default 0)){groupByWithVmrange})'.format(fragment=fragment, spanKind=spanKind, percentile=percentile, groupByWithVmrange=groupByWithVmrangeStr)
+            
+            # print(query)
+            if isUnResolvedGUID:
+                name = "[GUID] {}".format(name)
+
+            config = json.dumps(model)
+        elif type == 'apm_jvm_metric':
+            print('-- unhandled app alert: ' + name)
+            continue
+        else:
+            raise ValueError("unhandled app condition type " + type)
+
+        terms = condition['terms']
+        if len(terms) == 1:
+            forValue = int(terms[0]['duration']) * 60
+            threshold = terms[0]['threshold']
+            operator = mapOperator[terms[0]['operator']]
+
+            expr = "({query}) {operator} {threshold}".format(query=query, operator=operator, threshold=threshold)
+        elif len(terms) == 2:
+            if terms[0]['priority'] == 'warning':
+                warningTerms = terms[0]
+            elif terms[0]['priority'] == 'critical':
+                criticalTerms = terms[0]
+            else:
+                raise ValueError("unhandled terms.priority for condition id " + condition["id"])
+            if terms[1]['priority'] == 'warning':
+                warningTerms = terms[1]
+            elif terms[1]['priority'] == 'critical':
+                criticalTerms = terms[1]
+            else:
+                raise ValueError("unhandled terms.priority for condition id " + condition["id"])
+
+            if not warningTerms or not criticalTerms:
+                raise ValueError("unhandled terms for condition id " + condition["id"])
+
+            forValue = int(warningTerms['duration']) * 60
+            wThreshold = warningTerms['threshold']
+            wOperator = mapOperator[warningTerms['operator']]
+            cThreshold = criticalTerms['threshold']
+            cOperator = mapOperator[criticalTerms['operator']]
+
+            expr = "({query}) {operator} {threshold}".format(query=query, operator=wOperator, threshold=wThreshold)
+            expr2 = "({query}) {operator} {threshold}".format(query=query, operator=cOperator, threshold=cThreshold)
+
+        if mode == 'mysql':
+            statement = """INSERT INTO alert_rules
+(account_id, datasource, kind, name, `interval`, expr, expr2, `for`, labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
+VALUES
+(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
+        else:
+            statement = """INSERT INTO alert_rules
+(account_id, datasource, kind, name, "interval", expr, expr2, "for", labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
+VALUES
+(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
+        
+        print(statement)
+
 
 def create_argument_parser():
     parser = argparse.ArgumentParser(
@@ -530,6 +789,15 @@ def configure_parser(
         dest='source_account_id'
     )
     parser.add_argument(
+        '--compat',
+        '--compat',
+        nargs=1,
+        type=str,
+        required=True,
+        help='legacy or modern',
+        dest='compat'
+    )
+    parser.add_argument(
         '--mode',
         '--mode',
         nargs=1,
@@ -545,7 +813,7 @@ def main():
     parser = create_argument_parser()
     args = parser.parse_args()
     
-    migrate(args.source_account_id[0], args.mode[0])
+    migrate(args.source_account_id[0], args.compat[0], args.mode[0])
 
 
 def dquote(str):
@@ -559,7 +827,7 @@ def squoteSQL(str, mode):
     raise ValueError("invalid mode")
 
 def requote(str_list):
-    return [re.escape(x) for x in str_list].join('|')
+    return '|'.join([re.escape(x) for x in str_list])
 
 
 if __name__ == '__main__':

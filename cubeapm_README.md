@@ -59,7 +59,7 @@ python3 cubeapm1.py --sourceAccount $CUBE_MIGRATE_SRC_ACCOUNT --sourceApiKey $CU
 ## Generate SQL
 
 ```
-python3 cubeapm2.py --sourceAccount $CUBE_MIGRATE_SRC_ACCOUNT --mode <mysql_or_postgresql>
+python3 cubeapm2.py --sourceAccount $CUBE_MIGRATE_SRC_ACCOUNT --compat <legacy_or_modern> --mode <mysql_or_postgresql>
 
 # output: stdout
 ```
