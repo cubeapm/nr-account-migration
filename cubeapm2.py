@@ -135,6 +135,8 @@ def resolve_entities_to_services(entities, all_entities):
                     for x in all_entities:
                         if 'id' in x and str(x['id']) == str(guid):
                             filtered_entities.append(x)
+                        if 'applicationId' in x and str(x['applicationId']) == str(guid):
+                            filtered_entities.append(x)
                 except Exception as e:
                     logger.warning(f"Error filtering entities for guid {guid}: {e}")
                     filtered_entities = []
@@ -434,12 +436,13 @@ def mapAppCondition(app_condition, all_entities):
     if not entities:
         entities = ["policy-level"]
     
+    names = resolve_entities_to_services(entities, all_entities)
+    spanKind = 'span_kind=~"server|consumer"'
+    
     if condition_type == 'apm_app_metric' and metric == 'error_percentage':
         try:
-            names = resolve_entities_to_services(entities, all_entities)
-            fragment, model = create_service_filter_and_model(names, "error_percentage")
             
-            spanKind = 'span_kind=~"server|consumer"'
+            fragment, model = create_service_filter_and_model(names, "error_percentage")
             newQuery = 'sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}, status_code="ERROR"}} default 0)) by (service) * 100 / sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}}} default 0)) by (service)'.format(
                 fragment=fragment, spanKind=spanKind
             )
@@ -451,10 +454,7 @@ def mapAppCondition(app_condition, all_entities):
     
     elif condition_type == 'apm_response_time_percentile':
         try:
-            names = resolve_entities_to_services(entities, all_entities)
             fragment, model = create_service_filter_and_model(names, "latency_percentile", app_condition.get('percentile_value', '90'))
-            
-            spanKind = 'span_kind=~"server|consumer"'
             newQuery = 'histogram_quantile(0.{percentile}, sum(rate(cube_apm_calls_duration_seconds_bucket{{{fragment}, {spanKind}}}[5m])) by (service, le))'.format(
                 fragment=fragment, spanKind=spanKind, percentile=app_condition.get('percentile_value', '90')
             )
