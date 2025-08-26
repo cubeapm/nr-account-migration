@@ -106,27 +106,27 @@ def parseFacet(entityType, facet):
     return groupBy
 
 
-def makeEsr(entityType, names):
+def makeEsr(entityType, names, serviceLabel='service'):
     if entityType == "APPLICATION":
         if len(names) == 1:
-            fragment = 'service="{}"'.format(dquote(names[0]['service']))
+            fragment = '{}="{}"'.format(serviceLabel, dquote(names[0]['service']))
             modelOperator = '='
         else:
-            fragment = 'service=~"{}"'.format(requote([x['service'] for x in names]))
+            fragment = '{}=~"{}"'.format(serviceLabel, requote([x['service'] for x in names]))
             modelOperator = '=~'
         labelPairs = [
-            {"label": "service", "operator": modelOperator, "values": [x['service'] for x in names], "options": []},
+            {"label": serviceLabel, "operator": modelOperator, "values": [x['service'] for x in names], "options": []},
         ]
     elif entityType == "KEY_TRANSACTION":
         if len(names) == 1:
-            fragment = 'service="{}", root_name="{}"'.format(dquote(names[0]['service']), dquote(names[0]['root_name']))
+            fragment = '{}="{}", root_name="{}"'.format(serviceLabel, dquote(names[0]['service']), dquote(names[0]['root_name']))
             modelOperator = '='
         else:
             # TODO: this is not entirely correct, as it will do many to many match instead of one to one
-            fragment = 'service=~"{}", root_name=~"{}"'.format(requote([x['service'] for x in names]), requote([x['root_name'] for x in names]))
+            fragment = '{}=~"{}", root_name=~"{}"'.format(serviceLabel, requote([x['service'] for x in names]), requote([x['root_name'] for x in names]))
             modelOperator = '=~'
         labelPairs = [
-            {"label": "service", "operator": modelOperator, "values": [x['service'] for x in names], "options": []},
+            {"label": serviceLabel, "operator": modelOperator, "values": [x['service'] for x in names], "options": []},
             {"label": "root_name", "operator": modelOperator, "values": [x['root_name'] for x in names], "options": []},
         ]
     else:
@@ -649,17 +649,15 @@ VALUES
         metric = condition.get('metric')
 
         if type == 'apm_app_metric':
-            if metric == 'error_percentage':
-                if entityType != "APPLICATION":
-                    raise ValueError("unhandled situation in app alert: " + condition['id'])
+            if entityType != "APPLICATION":
+                    raise ValueError("unhandled situation in app alert: " + str(condition['id']))
 
-                fragment, labelPairs = makeEsr(entityType, names)
-                
-                spanKind = 'span_kind=~"server|consumer"'
-                
-                groupBy = ['service']
-                groupByStr = ' by ({})'.format(','.join(groupBy)) if groupBy else ''
-                
+            fragment, labelPairs = makeEsr(entityType, names)
+            spanKind = 'span_kind=~"server|consumer"'
+            groupBy = ['service']
+            groupByStr = ' by ({})'.format(','.join(groupBy)) if groupBy else ''
+
+            if metric == 'error_percentage':
                 model = {
                     "model": {
                         "type": "quick",
@@ -671,15 +669,34 @@ VALUES
                 }
 
                 query = 'sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}, status_code="ERROR"}} default 0)){groupBy} * 100 / sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}}} default 0)){groupBy}'.format(fragment=fragment, spanKind=spanKind, groupBy=groupByStr)
+            elif metric == 'response_time_web':
+                # transactionType = 'Web'
+                model = {}
+                fragment += ', root_name=~"WebTransaction/.*"'
                 
-                # print(query)
-                if isUnResolvedGUID:
-                    name = "[GUID] {}".format(name)
+                # do not multiply by 1000 as the threshold is in seconds
+                query = 'sum(increase(cube_apm_latency_sum{{{fragment}, {spanKind}}} default 0)){groupBy} / sum(increase(cube_apm_latency_count{{{fragment}, {spanKind}}} default 0)){groupBy}'.format(fragment=fragment, spanKind=spanKind, groupBy=groupByStr)
+            elif metric == 'apdex':
+                model = {}
+                groupByWithVmrange = groupBy + ['vmrange']
+                groupByWithVmrangeStr = ' by ({})'.format(','.join(groupByWithVmrange))
 
-                config = json.dumps(model)
+                query = """0.5 *
+        (
+        histogram_share(0.5, sum{groupByWithVmrange} (increase(cube_apm_latency_bucket{{{fragment}, {spanKind}, status_code!="ERROR"}} default 0)))
+        +
+        histogram_share(2.0, sum{groupByWithVmrange} (increase(cube_apm_latency_bucket{{{fragment}, {spanKind}, status_code!="ERROR"}} default 0)))
+        )
+        * sum{groupBy} (increase(cube_apm_latency_count{{{fragment}, {spanKind}, status_code!="ERROR"}} default 0))
+        / sum{groupBy} (increase(cube_apm_latency_count{{{fragment}, {spanKind}}} default 0))""".format(fragment=fragment, spanKind=spanKind, groupBy=groupByStr, groupByWithVmrange=groupByWithVmrangeStr)
             else:
                 print('-- unhandled app alert: ' + name)
                 continue
+
+            # print(query)
+            if isUnResolvedGUID:
+                name = "[GUID] {}".format(name)
+            config = json.dumps(model)
         elif type == 'apm_app_metric_baseline':
             print('-- unhandled app alert: ' + name)
             continue
@@ -688,7 +705,7 @@ VALUES
             continue
         elif type == 'apm_response_time_percentile':
             if entityType != "APPLICATION":
-                raise ValueError("unhandled situation in app alert: " + condition['id'])
+                raise ValueError("unhandled situation in app alert: " + str(condition['id']))
                 
             fragment, labelPairs = makeEsr(entityType, names)
 
@@ -714,8 +731,23 @@ VALUES
 
             config = json.dumps(model)
         elif type == 'apm_jvm_metric':
-            print('-- unhandled app alert: ' + name)
-            continue
+            if entityType != "APPLICATION":
+                raise ValueError("unhandled situation in app alert: " + condition['id'])
+
+            fragment, labelPairs = makeEsr(entityType, names, 'service.name')
+            if metric == 'cpu_utilization_time':
+                # "SELECT filter(average(newrelic.timeslice.value) * 100, WHERE metricTimesliceName = 'CPU/User/Utilization') OR 0 FROM Metric WHERE appId IN (1404940060) AND metricTimesliceName IN ('CPU/User/Utilization', 'Agent/MetricsReported/count') FACET appId, realAgentId, host"
+                query = 'avg(cube_apm_cpu_utilization{{{fragment}, state="user"}}) by (service.name, host.name) * 100'.format(fragment=fragment)
+                model = {}
+                config = json.dumps(model)
+            elif metric == 'heap_memory_usage':
+                # SELECT filter(average(newrelic.timeslice.value) * 100, WHERE metricTimesliceName = 'Memory/Heap/Utilization') OR 0 FROM Metric WHERE appId IN (107184768) AND metricTimesliceName IN ('Memory/Heap/Utilization', 'Agent/MetricsReported/count') FACET appId, realAgentId, host
+                query = 'sum(jvm.memory.used{{{fragment}, jvm.memory.type="heap"}}) by (service.name, host.name) * 100 / sum(jvm.memory.limit{{{fragment}, jvm.memory.type="heap"}}) by (service.name, host.name)'.format(fragment=fragment)
+                model = {}
+                config = json.dumps(model)
+            else:
+                print('-- unhandled app alert: ' + name)
+                continue
         else:
             raise ValueError("unhandled app condition type " + type)
 
