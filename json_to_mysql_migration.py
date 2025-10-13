@@ -132,7 +132,8 @@ def generate_mysql_inserts(json_file_path, output_file_path):
                     panel_type = type_map.get(panel_type_raw, panel_type_raw)
                     layout = widget.get('layout', {})
                     rgl_layout = to_react_grid_layout(layout, panel_id_counter)
-                    title = widget.get('title') or None
+                    raw_title = widget.get('title')
+                    title = raw_title if isinstance(raw_title, str) and raw_title.strip() != '' else 'title not found'
                     # Store remaining widget fields plus page context as config
                     queries_in = widget.get('queries') or []
                     queries_objects = []
