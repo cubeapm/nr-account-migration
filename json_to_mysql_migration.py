@@ -40,7 +40,7 @@ def to_react_grid_layout(layout_dict, item_id):
         h = int(height)
     except Exception:
         return None
-    return {'x': x, 'y': y, 'w': w, 'h': h, 'i': str(item_id)}
+    return {'x': x, 'y': y, 'w': w, 'h': h, 'i': str(item_id), 'moved': False, 'static': False}
 
 def generate_mysql_inserts(json_file_path, output_file_path):
     """Generate MySQL INSERT statements from JSON file"""
@@ -99,7 +99,7 @@ def generate_mysql_inserts(json_file_path, output_file_path):
             dashboard_sql = (
                 f"INSERT INTO dashboards (id, title, variables, status, created_at, updated_at) "
                 f"VALUES ({new_dashboard_id}, {escape_sql_string(title)}, "
-                f"{escape_json_for_sql(variables)}, 'active', "
+                f"{escape_json_for_sql(variables)}, 'ACTIVE', "
                 f"'{current_timestamp}', '{current_timestamp}');"
             )
             dashboard_inserts.append(dashboard_sql)
@@ -123,21 +123,44 @@ def generate_mysql_inserts(json_file_path, output_file_path):
                 widgets = page.get('widgets', [])
                 
                 for widget in widgets:
-                    panel_type = widget.get('type', '')
+                    panel_type_raw = widget.get('type', '')
+                    type_map = {
+                        'chart': 'linechart',
+                        'metric': 'scorecard',
+                        'text': 'table',
+                    }
+                    panel_type = type_map.get(panel_type_raw, panel_type_raw)
                     layout = widget.get('layout', {})
                     rgl_layout = to_react_grid_layout(layout, panel_id_counter)
                     title = widget.get('title') or None
                     # Store remaining widget fields plus page context as config
+                    queries_in = widget.get('queries') or []
+                    queries_objects = []
+                    for q in queries_in if isinstance(queries_in, list) else []:
+                        if isinstance(q, dict):
+                            queries_objects.append({
+                                'unit': q.get('unit', 'number'),
+                                'model': q.get('model', {}),
+                                'query': q.get('query', ''),
+                                'title': q.get('title', ''),
+                            })
+                    query_top = queries_objects[0]['query'] if len(queries_objects) > 0 else ''
                     config = {
                         'page': page_name,
-                        'widget': widget
+                        'unit': 'number',
+                        'query': query_top,
+                        'stack': False,
+                        'legend': {'pos': 'right', 'label': [], 'formula': 'avg'},
+                        'queries': queries_objects,
+                        'showSearch': False,
+                        'defaultSortCol': 0,
                     }
                     
                     # Create panel insert statement with unique sequential ID
                     panel_sql = (
                         f"INSERT INTO panels (id, dashboard_id, type, layout, title, status, config, created_at, updated_at) "
                     f"VALUES ({panel_id_counter}, {new_dashboard_id}, {escape_sql_string(panel_type)}, "
-                    f"{escape_json_for_sql(rgl_layout if rgl_layout is not None else layout)}, {escape_sql_string(title)}, 'active', "
+                    f"{escape_json_for_sql(rgl_layout if rgl_layout is not None else layout)}, {escape_sql_string(title)}, 'ACTIVE', "
                         f"{escape_json_for_sql(config)}, '{current_timestamp}', '{current_timestamp}');"
                     )
                     panel_inserts.append(panel_sql)
