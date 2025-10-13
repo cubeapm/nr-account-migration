@@ -140,7 +140,6 @@ def generate_mysql_inserts(json_file_path, output_file_path):
                         if isinstance(q, dict):
                             queries_objects.append({
                                 'unit': q.get('unit', 'number'),
-                                'model': q.get('model', {}),
                                 'query': q.get('query', ''),
                                 'title': q.get('title', ''),
                             })
