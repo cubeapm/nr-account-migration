@@ -22,12 +22,40 @@ def escape_json_for_sql(json_obj):
     json_str = json.dumps(json_obj, separators=(',', ':'))
     return "'" + json_str.replace("\\", "\\\\").replace("'", "''") + "'"
 
+def to_react_grid_layout(layout_dict, item_id):
+    """Convert input layout with keys {column,row,width,height} to React Grid Layout {x,y,w,h,i}"""
+    if not isinstance(layout_dict, dict):
+        return None
+    column = layout_dict.get('column')
+    row = layout_dict.get('row')
+    width = layout_dict.get('width')
+    height = layout_dict.get('height')
+    if column is None or row is None or width is None or height is None:
+        return None
+    # RGL expects 0-based x,y. Source appears 1-based.
+    try:
+        x = max(int(column) - 1, 0)
+        y = max(int(row) - 1, 0)
+        w = int(width)
+        h = int(height)
+    except Exception:
+        return None
+    return {'x': x, 'y': y, 'w': w, 'h': h, 'i': str(item_id)}
+
 def generate_mysql_inserts(json_file_path, output_file_path):
     """Generate MySQL INSERT statements from JSON file"""
     
     # Read JSON file
     with open(json_file_path, 'r', encoding='utf-8') as f:
-        dashboards_data = json.load(f)
+        raw_data = json.load(f)
+    
+    # Normalize dashboards list based on detected schema
+    if isinstance(raw_data, dict) and 'dashboards' in raw_data:
+        dashboards_data = raw_data.get('dashboards', [])
+    elif isinstance(raw_data, list):
+        dashboards_data = raw_data
+    else:
+        raise ValueError('Unsupported dashboard JSON structure')
     
     # Current timestamp for created_at and updated_at
     current_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -54,15 +82,18 @@ def generate_mysql_inserts(json_file_path, output_file_path):
         # Insert dashboards with unique sequential IDs
         f.write("-- Insert dashboards\n")
         dashboard_inserts = []
-        dashboard_id_mapping = {}  # Map original ID to new sequential ID
+        dashboard_id_mapping = {}  # Map synthetic original key to new sequential ID
         
         for i, dashboard in enumerate(dashboards_data, start=1):
-            original_id = dashboard.get('id', 0)
+            # The input does not have a stable numeric id; synthesize a key from index
+            synthetic_original_id = i  # used only for mapping within this run
             new_dashboard_id = i
-            dashboard_id_mapping[original_id] = new_dashboard_id
+            dashboard_id_mapping[synthetic_original_id] = new_dashboard_id
             
-            title = dashboard.get('title', '')
-            variables = dashboard.get('variables', [])
+            # Title may be under 'title' or 'name'
+            title = dashboard.get('title') or dashboard.get('name', '')
+            # Variables may be absent; try common alternatives
+            variables = dashboard.get('variables') or dashboard.get('templateVariables') or []
             
             # Create dashboard insert statement
             dashboard_sql = (
@@ -83,26 +114,34 @@ def generate_mysql_inserts(json_file_path, output_file_path):
         panel_inserts = []
         panel_id_counter = 1
         
-        for dashboard in dashboards_data:
-            original_dashboard_id = dashboard.get('id', 0)
-            new_dashboard_id = dashboard_id_mapping[original_dashboard_id]
-            panels = dashboard.get('panels', [])
+        for index, dashboard in enumerate(dashboards_data, start=1):
+            new_dashboard_id = dashboard_id_mapping[index]
+            pages = dashboard.get('pages', [])
             
-            for panel in panels:
-                panel_type = panel.get('type', '')
-                layout = panel.get('layout', {})
-                title = panel.get('title')
-                config = panel.get('config', {})
+            for page in pages:
+                page_name = page.get('name') or page.get('title') or ''
+                widgets = page.get('widgets', [])
                 
-                # Create panel insert statement with unique sequential ID
-                panel_sql = (
-                    f"INSERT INTO panels (id, dashboard_id, type, layout, title, status, config, created_at, updated_at) "
+                for widget in widgets:
+                    panel_type = widget.get('type', '')
+                    layout = widget.get('layout', {})
+                    rgl_layout = to_react_grid_layout(layout, panel_id_counter)
+                    title = widget.get('title') or None
+                    # Store remaining widget fields plus page context as config
+                    config = {
+                        'page': page_name,
+                        'widget': widget
+                    }
+                    
+                    # Create panel insert statement with unique sequential ID
+                    panel_sql = (
+                        f"INSERT INTO panels (id, dashboard_id, type, layout, title, status, config, created_at, updated_at) "
                     f"VALUES ({panel_id_counter}, {new_dashboard_id}, {escape_sql_string(panel_type)}, "
-                    f"{escape_json_for_sql(layout)}, {escape_sql_string(title)}, 'active', "
-                    f"{escape_json_for_sql(config)}, '{current_timestamp}', '{current_timestamp}');"
-                )
-                panel_inserts.append(panel_sql)
-                panel_id_counter += 1
+                    f"{escape_json_for_sql(rgl_layout if rgl_layout is not None else layout)}, {escape_sql_string(title)}, 'active', "
+                        f"{escape_json_for_sql(config)}, '{current_timestamp}', '{current_timestamp}');"
+                    )
+                    panel_inserts.append(panel_sql)
+                    panel_id_counter += 1
         
         # Write panel inserts
         for sql in panel_inserts:
@@ -120,14 +159,13 @@ def generate_mysql_inserts(json_file_path, output_file_path):
         
         # ID mapping information
         f.write(f"\n-- ID Mapping Information:\n")
-        f.write(f"-- Original dashboard IDs were remapped to sequential IDs (1, 2, 3, ...)\n")
+        f.write(f"-- Dashboard IDs assigned sequentially (1, 2, 3, ...) based on input order\n")
         f.write(f"-- Panel IDs were assigned sequential values starting from 1\n")
         f.write(f"-- Dashboard-Panel relationships preserved using new dashboard IDs\n")
     
     print(f"Migration script generated: {output_file_path}")
     print(f"Dashboards: {len(dashboards_data)}")
     print(f"Panels: {len(panel_inserts)}")
-    print(f"Dashboard ID mapping: {dashboard_id_mapping}")
 
 def main():
     parser = argparse.ArgumentParser(description='Convert JSON dashboard data to MySQL INSERT statements')
