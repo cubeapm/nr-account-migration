@@ -498,6 +498,22 @@ histogram_share(2.0, sum{groupByWithVmrange} (increase(cube_apm_latency_bucket{{
         cond = groupdict.get('cond') or ''
 
         httpMatchers = []
+        # Support ranges like: http.statusCode >= '400' AND http.statusCode < '500' -> http_code=~"4.*"
+        lower = re.search(r"http\.statusCode\s*>?=\s*'(\d{3})'", cond, flags=re.IGNORECASE)
+        upper = re.search(r"http\.statusCode\s*<\s*'(\d{3})'", cond, flags=re.IGNORECASE)
+        if lower and upper:
+            low = lower.group(1)
+            up = upper.group(1)
+            try:
+                low_i = int(low)
+                up_i = int(up)
+                if low_i % 100 == 0 and up_i - low_i == 100:
+                    httpMatchers.append('http_code=~"' + re.escape(low[0]) + '.*"')
+                elif up_i > low_i:
+                    codes = '|'.join(str(c) for c in range(low_i, up_i))
+                    httpMatchers.append('http_code=~"(' + codes + ')"')
+            except Exception:
+                pass
         # Support LIKE '4%' / '5%' / '400' forms
         for m in re.finditer(r"http\.statusCode\s+LIKE\s+'(\d{1,3})(%)?'", cond, flags=re.IGNORECASE):
             prefix = m.group(1)
