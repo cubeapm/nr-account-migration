@@ -475,6 +475,57 @@ histogram_share(2.0, sum{groupByWithVmrange} (increase(cube_apm_latency_bucket{{
             return 'GUID', newQuery, json.dumps(model), thresholdMultiplier
         return 'LATENCY_PERCENTILE', newQuery, json.dumps(model), thresholdMultiplier
 
+    # http status percentage (NRQL percentage(count(*), WHERE ...)) ############################
+    res = re.search(
+        r"^\s*SELECT\s+percentage\s*\(\s*count\s*\(\s*\*\s*\)\s*,\s*WHERE\s+(?P<cond>.+?)\)\s*FROM\s+Transaction\s+WHERE\s+" + idRegEx + r"\s*$",
+        query, flags=re.IGNORECASE
+    )
+    if res:
+        groupdict = res.groupdict()
+
+        try:
+            entityType, names, isUnResolvedGUID = resolveEntityGuids(groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities)
+        except Exception as ex:
+            return "ERROR", "# %s\n%s" % (ex, query), '{}', 1
+
+        if entityType != "APPLICATION":
+            raise ValueError("unhandled entity type " + entityType)
+
+        fragment, labelPairs = makeEsr(entityType, names)
+
+        spanKind = 'span_kind=~"server|consumer"'
+
+        cond = groupdict.get('cond') or ''
+
+        httpMatchers = []
+        # Support LIKE '4%' / '5%' / '400' forms
+        for m in re.finditer(r"http\.statusCode\s+LIKE\s+'(\d{1,3})(%)?'", cond, flags=re.IGNORECASE):
+            prefix = m.group(1)
+            isPrefix = bool(m.group(2))
+            if isPrefix:
+                httpMatchers.append('http_code=~"' + re.escape(prefix) + '.*"')
+            else:
+                httpMatchers.append('http_code="' + prefix + '"')
+        # Support equality http.statusCode = '401'
+        for m in re.finditer(r"http\.statusCode\s*=\s*'(\d{3})'", cond, flags=re.IGNORECASE):
+            httpMatchers.append('http_code="' + m.group(1) + '"')
+        # Support inequality http.statusCode != '400'
+        for m in re.finditer(r"http\.statusCode\s*!=\s*'(\d{3})'", cond, flags=re.IGNORECASE):
+            httpMatchers.append('http_code!="' + m.group(1) + '"')
+
+        httpFilter = (', ' + ', '.join(httpMatchers)) if httpMatchers else ''
+
+        # Build percentage: numerator (matching) over denominator (all) * 100
+        newQuery = 'sum(increase(cube_apm_errors_total{{{fragment}, {spanKind}, status_code="ERROR"{httpFilter}}} default 0)) * 100 / sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}}} default 0))'.format(
+            fragment=fragment, spanKind=spanKind, httpFilter=httpFilter
+        )
+
+        model = {}
+
+        if isUnResolvedGUID:
+            return 'GUID', newQuery, json.dumps(model), 1
+        return 'HTTP_STATUS_PERCENTAGE', newQuery, json.dumps(model), 1
+
     # AWS metrics ############################
     # res = re.search(
     #     r"^\s*SELECT\s+average\s*\(\s*`aws\.(?P<awsService>\w+)\.(?P<awsMetric>\w+)`\s*\)\s*FROM\s+Metric\s+FACET\s*`aws\.(?P=awsService)\.(?P<awsDimension>)`\s*WHERE\s+`collector.name`\s*=\s*['\"][\w-]+['\"]\s*AND\s*`aws\.accountId`\s*=\s*['\"]' AND `aws.Arn` LIKE 'arn:aws:rds:ap-south-1:411342004333:db:checkout-prod-readonly'\s*$",
@@ -482,6 +533,10 @@ histogram_share(2.0, sum{groupByWithVmrange} (increase(cube_apm_latency_bucket{{
     # )
     # if res:
     #     groupdict = res.groupdict()
+
+    # trimmedquery = query.replace('\n', '') + '\n'
+    # print(trimmedquery)
+    
 
     return "UNHANDLED", query, '{}', 1
 

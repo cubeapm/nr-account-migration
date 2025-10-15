@@ -124,47 +124,54 @@ def generate_mysql_inserts(json_file_path, output_file_path):
                 
                 for widget in widgets:
                     panel_type_raw = widget.get('type', '')
-                    type_map = {
-                        'chart': 'linechart',
-                        'metric': 'scorecard',
-                        'text': 'table',
-                    }
-                    panel_type = type_map.get(panel_type_raw, panel_type_raw)
-                    layout = widget.get('layout', {})
-                    rgl_layout = to_react_grid_layout(layout, panel_id_counter)
-                    raw_title = widget.get('title')
-                    title = raw_title if isinstance(raw_title, str) and raw_title.strip() != '' else 'title not found'
-                    # Store remaining widget fields plus page context as config
-                    queries_in = widget.get('queries') or []
-                    queries_objects = []
-                    for q in queries_in if isinstance(queries_in, list) else []:
-                        if isinstance(q, dict):
-                            queries_objects.append({
-                                'unit': q.get('unit', 'number'),
-                                'query': q.get('query', ''),
-                                'title': q.get('title', ''),
-                            })
-                    query_top = queries_objects[0]['query'] if len(queries_objects) > 0 else ''
-                    config = {
-                        'page': page_name,
-                        'unit': 'number',
-                        'query': query_top,
-                        'stack': False,
-                        'legend': {'pos': 'right', 'label': [], 'formula': 'avg'},
-                        'queries': queries_objects,
-                        'showSearch': False,
-                        'defaultSortCol': 0,
-                    }
-                    
-                    # Create panel insert statement with unique sequential ID
-                    panel_sql = (
-                        f"INSERT INTO panels (id, dashboard_id, type, layout, title, status, config, created_at, updated_at) "
-                    f"VALUES ({panel_id_counter}, {new_dashboard_id}, {escape_sql_string(panel_type)}, "
-                    f"{escape_json_for_sql(rgl_layout if rgl_layout is not None else layout)}, {escape_sql_string(title)}, 'ACTIVE', "
-                        f"{escape_json_for_sql(config)}, '{current_timestamp}', '{current_timestamp}');"
-                    )
-                    panel_inserts.append(panel_sql)
-                    panel_id_counter += 1
+                    if panel_type_raw != 'ignore':
+                        type_map = {
+                            'linechart': 'linechart',
+                            'linechart_area': 'linechart',
+                            'table': 'table',
+                            'chart': 'linechart',
+                            'scorecard': 'scorecard',
+                            'ignore': 'ignore',
+                        }
+                        stack = False
+                        panel_type = type_map.get(panel_type_raw, panel_type_raw)
+                        if panel_type_raw == 'linechart_area':
+                            stack = True
+                        layout = widget.get('layout', {})
+                        rgl_layout = to_react_grid_layout(layout, panel_id_counter)
+                        raw_title = widget.get('title')
+                        title = raw_title if isinstance(raw_title, str) and raw_title.strip() != '' else 'title not found'
+                        # Store remaining widget fields plus page context as config
+                        queries_in = widget.get('queries') or []
+                        queries_objects = []
+                        for q in queries_in if isinstance(queries_in, list) else []:
+                            if isinstance(q, dict):
+                                queries_objects.append({
+                                    'unit': q.get('unit', 'number'),
+                                    'query': q.get('query', ''),
+                                    'title': q.get('title', ''),
+                                })
+                        query_top = queries_objects[0]['query'] if len(queries_objects) > 0 else ''
+                        config = {
+                            'page': page_name,
+                            'unit': 'number',
+                            'query': query_top,
+                            'stack': stack,
+                            'legend': {'pos': 'right', 'label': [], 'formula': 'avg'},
+                            'queries': queries_objects,
+                            'showSearch': False,
+                            'defaultSortCol': 0,
+                        }
+                        
+                        # Create panel insert statement with unique sequential ID
+                        panel_sql = (
+                            f"INSERT INTO panels (id, dashboard_id, type, layout, title, status, config, created_at, updated_at) "
+                        f"VALUES ({panel_id_counter}, {new_dashboard_id}, {escape_sql_string(panel_type)}, "
+                        f"{escape_json_for_sql(rgl_layout if rgl_layout is not None else layout)}, {escape_sql_string(title)}, 'ACTIVE', "
+                            f"{escape_json_for_sql(config)}, '{current_timestamp}', '{current_timestamp}');"
+                        )
+                        panel_inserts.append(panel_sql)
+                        panel_id_counter += 1
         
         # Write panel inserts
         for sql in panel_inserts:

@@ -114,7 +114,6 @@ def makeEsr(entityType, names):
     
     return fragment, labelPairs
 
-
 def mapQuery(query, all_entities):
     # apdex ############################
     res = re.search(
@@ -469,16 +468,17 @@ def translate_widget(widget, entities, mode):
 def translate_widget_type(visualization_id):
     # New Relic visualization ID mapping
     widget_type_map = {
-        'viz.line': 'chart',
-        'viz.bar': 'chart',
-        'viz.pie': 'chart',
-        'viz.table': 'chart',
-        'viz.area': 'chart',
-        'viz.billboard': 'metric',
-        'viz.markdown': 'text',
-        'viz.heatmap': 'chart',
-        'viz.funnel': 'chart',
-        'viz.histogram': 'chart'
+        'viz.line': 'linechart',
+        'viz.bar': 'linechart_area',
+        'viz.pie': 'linechart_area',
+        'viz.table': 'table',
+        'viz.area': 'linechart_area',
+        'viz.billboard': 'scorecard',
+        'viz.markdown': 'ignore',
+        'viz.stacked-bar': 'linechart_area',
+        # 'viz.heatmap': 'chart',
+        # 'viz.funnel': 'chart',
+        # 'viz.histogram': 'chart'
     }
     return widget_type_map.get(visualization_id, 'chart')
 
