@@ -38,7 +38,7 @@ def to_react_grid_layout(layout_dict, item_id):
         x = max(int(column) - 1, 0)
         y = max(int(row) - 1, 0)
         w = int(width)
-        h = int(height)
+        h = int(height*2)
     except Exception:
         return None
     return {'x': x, 'y': y, 'w': w, 'h': h, 'i': str(item_id), 'moved': False, 'static': False}
@@ -138,7 +138,7 @@ def generate_postgresql_inserts(json_file_path, output_file_path):
                             'unit': 'number',
                             'query': query_top,
                             'stack': stack,
-                            'legend': {'pos': 'right', 'label': [], 'formula': 'avg'},
+                            'legend': {'pos': 'none', 'label': [], 'formula': 'avg'},
                             'queries': queries_objects,
                             'showSearch': False,
                             'defaultSortCol': 0,
