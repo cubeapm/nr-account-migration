@@ -14,20 +14,20 @@ mapOperator = {
     'BELOW': '<',
     'BELOW_OR_EQUALS': '<=',
     'EQUALS': '==',
-
+    'NOT_EQUALS': '!=',
     'above': '>',
     'above_or_equals': '>=',
     'below': '<',
     'below_or_equals': '<=',
     'equals': '==',
+    'not_equals': '!=',
 }
 
-idRegEx = r"\(?\`?(?P<idType>appId|appName|entity\.guid|entityGuid)\`?\s*(?:=\s*(?P<guid>\d+|''[^']+''|(?:'|\")[^'\"]+(?:'|\"))|IN\s*\((?P<guids>[^)]+)\))\)?"
+idRegEx = r"\(?\`?(?P<idType>appId|appName|entity\.guid|entityGuid)\`?\s*(?:=\s*(?P<guid>\d+|(?:'|\")[^'\"]+(?:'|\"))|IN\s*\((?P<guids>[^)]+)\))\)?"
 
-facetOptionalRegEx = r"(?:FACET\s*\`?(?P<facet>appId|appName|entity\.guid|entity\.name|transactionName)\`?)?"
+facetOptionalRegEx = r"(?:FACET\s*\`?(?P<facet>appId|appName|entity\.guid|entity\.name)\`?)?"
 
 transactionTypeOptionalRegEx = r"(?:(?:AND\s*)?\(?\s*transactionType\s*=\s*(?:'|\")(?P<transactionType>\w+)(?:'|\")\s*\)?\s*)?"
-transactionNameOptionalRegEx = r"(?:(?:AND\s*)?\(?\s*transactionName\s*=\s*(?P<transactionName>''[^']+''|'[^']+'|\"[^\"]+\")\s*\)?\s*)?"
 
 
 def resolveEntityGuids(idType, entry, entries_str, entities):
@@ -101,8 +101,6 @@ def parseFacet(entityType, facet):
             groupBy = ['service', 'root_name']
         else:
             raise ValueError("unhandled entity type " + entityType)
-    elif facet == 'transactionName':
-        groupBy = ['root_name']
     else:
         raise ValueError("unhandled facet " + facet)
     
@@ -143,15 +141,6 @@ def mapQuery(query, all_entities, compat):
     res = re.search(
         r"^\s*SELECT\s+apdex\s*\(\`?apm\.service\.apdex\`?\)\s*(?:AS\s*(?:\w+|'[^']*'|\"[^\"]*\"))?\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
         query, flags=re.IGNORECASE
-    ) or re.search(
-         r"^\s*SELECT\s+apdex\s*\(\s*newrelic\.timeslice\.value\s*\)\s*"
-        r"(?:AS\s*(?:\w+|''[^']*''|'[^']*'|\"[^\"]*\"))?\s*"
-        r"FROM\s+Metric\s+WHERE\s+"
-        r"(?:metricTimesliceName\s*=\s*(?:''[^']*''|'[^']*'|\"[^\"]*\")\s*AND\s+)?"
-        + idRegEx + r"\s*"
-        + facetOptionalRegEx + r"\s*$",
-        query,
-        flags=re.IGNORECASE
     )
     if res:
         groupdict = res.groupdict()
@@ -193,13 +182,7 @@ histogram_share(2.0, sum{groupByWithVmrange} (increase(cube_apm_latency_bucket{{
     
     # request_count ############################
     res = re.search(
-        r"^\s*\(?\s*SELECT\s+(?P<rpm1>rate\s*\()?\s*count\s*\(\s*apm\.(?P<mType>service|key)\.transaction\.duration\s*\)\s*(?P<rpm2>,\s*1\s+minute\s*\))?\s*(?:AS\s*(?:\w+|'[^']*'|\"[^\"]*\"))?\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + transactionTypeOptionalRegEx + r"\s*" + transactionNameOptionalRegEx + r"\s*" + facetOptionalRegEx + r"\s*\)?\s*$",
-        query, flags=re.IGNORECASE
-    ) or re.search(
-        r"^\s*\(?\s*SELECT\s+filter\s*\(\s*count\s*\(\s*newrelic\.timeslice\.value\s*\)\s*,\s*WHERE\s+metricTimesliceName\s*=\s*(?:''[^']*''|'[^']*'|\"[^\"]*\")\s*\)\s*OR\s*0\s*"
-        r"FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*"
-        r"(?:AND\s+metricTimesliceName\s+IN\s*\([^)]+\)\s*)?"
-        + facetOptionalRegEx + r"\s*\)?\s*$",
+        r"^\s*SELECT\s+(?P<rpm1>rate\s*\()?\s*count\s*\(\s*apm\.(?P<mType>service|key)\.transaction\.duration\s*\)\s*(?P<rpm2>,\s*1\s+minute\s*\))?\s*(?:AS\s*(?:\w+|'[^']*'|\"[^\"]*\"))?\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + transactionTypeOptionalRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
         query, flags=re.IGNORECASE
     )
     if res:
@@ -210,12 +193,11 @@ histogram_share(2.0, sum{groupByWithVmrange} (increase(cube_apm_latency_bucket{{
         except Exception as ex:
             return "ERROR", "# %s\n%s" % (ex, query), '{}', 1
 
-        mType = groupdict.get('mType')
         if entityType == "APPLICATION":
-            if mType and mType != 'service':
+            if groupdict.get('mType') != 'service':
                 raise ValueError("unhandled situation: " + query)
         elif entityType == "KEY_TRANSACTION":
-            if mType and mType != 'key':
+            if groupdict.get('mType') != 'key':
                 raise ValueError("unhandled situation: " + query)
         else:
             raise ValueError("unhandled entity type " + entityType)
@@ -243,7 +225,6 @@ histogram_share(2.0, sum{groupByWithVmrange} (increase(cube_apm_latency_bucket{{
 
         transactionType = groupdict.get('transactionType')
         if transactionType:
-            transactionType = transactionType.strip("'\"")
             model = {}
             if transactionType == 'Web':
                 fragment += ', root_name=~"WebTransaction/.*"'
@@ -251,12 +232,6 @@ histogram_share(2.0, sum{groupByWithVmrange} (increase(cube_apm_latency_bucket{{
                 fragment += ', root_name=~"OtherTransaction/.*"'
             else:
                 raise ValueError("unhandled transactionType " + transactionType)
-
-        transactionName = groupdict.get('transactionName')
-        if transactionName:
-            model = {}
-            transactionName = transactionName.strip("'\"")
-            fragment += ', root_name="{}"'.format(dquote(transactionName))
 
         if groupdict.get('rpm1'):
             newQuery = 'sum(rate(cube_apm_calls_total{{{fragment}, {spanKind}}} default 0)){groupBy} * 60'.format(fragment=fragment, spanKind=spanKind, groupBy=groupByStr)
@@ -275,24 +250,7 @@ histogram_share(2.0, sum{groupByWithVmrange} (increase(cube_apm_latency_bucket{{
     ) or re.search(
         r"^\s*SELECT\s+(?:\()?\s*sum\s*\(apm\.(?P<mType>service|key\.transaction)\.error\.count(\['count'\])?\)\s*(?P<hundred1>\*\s*100)?\s*/\s*count\s*\(apm\.(?P<mType2>service|key)\.transaction\.duration\)\s*(?:\))?\s*(?P<hundred2>\*\s*100)?\s*(?:AS\s*(?:\w+|'[^']*'|\"[^\"]*\"))?\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + transactionTypeOptionalRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
         query, flags=re.IGNORECASE
-    ) or re.search(
-        r"^\s*\(?\s*SELECT\s+\(\(\s*filter\s*\(\s*count\s*\(\s*newrelic\.timeslice\.value\s*\)\s*,\s*where\s+metricTimesliceName\s*=\s*(?:''[^']*''|'[^']*'|\"[^\"]*\")\s*\)\s*"
-        r"/\s*filter\s*\(\s*count\s*\(\s*newrelic\.timeslice\.value\s*\)\s*,\s*where\s+metricTimesliceName\s+IN\s*\([^)]+\)\s*\)\s*\)\s*OR\s*0\s*\)\s*\*\s*(?P<hundred1>100)\s*"
-        r"FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*"
-        r"(?:AND\s+metricTimesliceName\s+IN\s*\([^)]+\)\s*)?"
-        + facetOptionalRegEx + r"\s*\)?\s*$",
-        query, flags=re.IGNORECASE
-    ) or re.search(
-    r"^\s*\(?\s*SELECT\s+sum\s*\(\s*apm\.(?P<mType>service)\.transaction\.error\.count\s*\[\s*(?:''count''|'count'|\"count\")\s*\]\s*\)\s*"
-    r"/\s*count\s*\(\s*apm\.(?P<mType2>service)\.transaction\.duration\s*\)\s*"
-    r"(?:AS\s*(?:\w+|''[^']*''|'[^']*'|\"[^\"]*\"))?\s*"
-    r"FROM\s+Metric\s+WHERE\s*"
-    r"\(?\s*`?(?P<idType>entity\.guid|entityGuid)\`?\s*=\s*(?P<guid>''[^']+''|'[^']+'|\"[^\"]+\")\s*\)?\s*"
-    r"AND\s*\(\(\s*transactionType\s*=\s*(?P<transactionType>''Web''|''Other''|'Web'|'Other'|\"Web\"|\"Other\")\s*"
-    r"AND\s*transactionName\s*=\s*(?P<transactionName>''[^']+''|'[^']+'|\"[^\"]+\")\s*\)\)\s*\)?\s*$",
-    query,
-    flags=re.IGNORECASE
-)
+    )
     if res:
         groupdict = res.groupdict()
 
@@ -303,13 +261,11 @@ histogram_share(2.0, sum{groupByWithVmrange} (increase(cube_apm_latency_bucket{{
         except Exception as ex:
             return "ERROR", "# %s\n%s" % (ex, query), '{}', 1
 
-        mType = groupdict.get('mType')
-        mType2 = groupdict.get('mType2')
         if entityType == "APPLICATION":
-            if (mType and mType != 'service') or (mType2 and mType2 != 'service'):
+            if groupdict.get('mType') != 'service' or groupdict.get('mType2') != 'service':
                 raise ValueError("unhandled situation: " + query)
         elif entityType == "KEY_TRANSACTION":
-            if (mType and mType != 'key.transaction') or (mType2 and mType2 != 'key'):
+            if groupdict.get('mType') != 'key.transaction' or groupdict.get('mType2') != 'key':
                 raise ValueError("unhandled situation: " + query)
         else:
             raise ValueError("unhandled entity type " + entityType)
@@ -333,7 +289,6 @@ histogram_share(2.0, sum{groupByWithVmrange} (increase(cube_apm_latency_bucket{{
 
         transactionType = groupdict.get('transactionType')
         if transactionType:
-            transactionType = transactionType.strip("'\"")
             model = {}
             if transactionType == 'Web':
                 fragment += ', root_name=~"WebTransaction/.*"'
@@ -710,16 +665,16 @@ def migrate(src_acct_id, compat, mode):
 
         if mode == 'mysql':
             statement = """INSERT INTO alert_rules
-(account_id, datasource, kind, name, `interval`, expr, expr2, `for`, labels, annotations, status, config, receiver, repeat_interval, mute, created_at, updated_at)
+(account_id, datasource, kind, name, `interval`, expr, expr2, `for`, labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
 VALUES
-(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval, '{}')
+(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
         else:
             statement = """INSERT INTO alert_rules
-(account_id, datasource, kind, name, "interval", expr, expr2, "for", labels, annotations, status, config, receiver, repeat_interval, mute, created_at, updated_at)
+(account_id, datasource, kind, name, "interval", expr, expr2, "for", labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
 VALUES
-(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval, '{}')
+(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
         
         print(statement)
 
@@ -903,16 +858,16 @@ VALUES
 
         if mode == 'mysql':
             statement = """INSERT INTO alert_rules
-(account_id, datasource, kind, name, `interval`, expr, expr2, `for`, labels, annotations, status, config, receiver, repeat_interval, mute, created_at, updated_at)
+(account_id, datasource, kind, name, `interval`, expr, expr2, `for`, labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
 VALUES
-(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval, '{}')
+(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
         else:
             statement = """INSERT INTO alert_rules
-(account_id, datasource, kind, name, "interval", expr, expr2, "for", labels, annotations, status, config, receiver, repeat_interval, mute, created_at, updated_at)
+(account_id, datasource, kind, name, "interval", expr, expr2, "for", labels, annotations, status, config, receiver, repeat_interval, created_at, updated_at)
 VALUES
-(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval, '{}')
+(1, '{}', '{}', '{}', {}, '{}', '{}', {}, '{}', '{}', '{}', '{}', '{}', {}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+""".format(datasource, kind, squoteSQL(name, mode), interval, squoteSQL(expr, mode), squoteSQL(expr2, mode), forValue, squoteSQL(labels, mode), squoteSQL(annotations, mode), squoteSQL(status, mode), squoteSQL(config, mode), squoteSQL(receiver, mode), repeat_interval)
         
         print(statement)
 
