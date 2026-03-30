@@ -409,6 +409,42 @@ This script migrates notification destinations, channels, and workflows.
 1. DESTINATION_TYPE_WEBHOOK
 
 
+####  7a) python3 cubeapm_receiver_groups.py (generate receiver-group SQL from NerdGraph workflows)
+
+**Preconditions:** `store_policies.py` (to create `db/<accountId>/alert_policies/alert_policies.json`).
+
+This script:
+- Fetches **workflows**, **notification channels**, and **destinations** via NerdGraph.
+- Joins them to **alert policy IDs** (from `alert_policies.json`) to build per-policy receiver-group configs.
+- Generates SQL inserts for Cube's `alert_receiver_groups`.
+
+It supports two ways to provide the source account + key:
+- **Environment variables (default):**
+
+```
+export CUBE_MIGRATE_SRC_ACCOUNT=<new_relic_account_id>
+export CUBE_MIGRATE_SRC_KEY=<new_relic_user_api_key>
+# region can be us or eu
+export CUBE_MIGRATE_SRC_REGION=<new_relic_account_region>
+```
+
+- **CLI options override env vars (if provided):**
+
+```
+usage: cubeapm_receiver_groups.py [--account-id ACCOUNT_ID] [--api-key API_KEY] [--region {eu,us}] [--alert-policies ALERT_POLICIES]
+```
+
+**Inputs:**
+- By default, reads alert policies from `db/<accountId>/alert_policies/alert_policies.json`.
+- If `--alert-policies` is provided, that path is used instead.
+
+**Outputs (defaults):**
+- `db/<accountId>/receiver_groups/nr_workflows.json`
+- `db/<accountId>/receiver_groups/nr_channels.json`
+- `db/<accountId>/receiver_groups/nr_destinations.json`
+- `db/<accountId>/receiver_groups/receiver_groups_insert.sql`
+
+
 ####  8) python3 migrate_apm.py (Migrate settings for APM apps)
 
 Migrate APM Apdex configuration settings. **This no longer migrates labels.** Please use migratetags.py instead for tag migrations.
