@@ -204,6 +204,55 @@ histogram_share(2.0, sum{groupByWithVmrange} (increase(cube_apm_latency_bucket{{
             return 'GUID', newQuery, '{}', 1
         return 'APDEX', newQuery, '{}', 1
     
+    # request_count — Transaction: rate(count(duration), 1 minute) WHERE entityGuid + transactionType + name ############################
+    res = re.search(
+        r"^\s*\(?\s*SELECT\s+"
+        r"(?P<rpm1>rate\s*\()?\s*count\s*\(\s*duration\s*\)\s*(?P<rpm2>,\s*1\s+minute\s*\))?\s*"
+        r"(?:AS\s+(?:\w+|''[^']*''|'[^']+'|\"[^\"]+\"))?\s*"
+        r"FROM\s+Transaction\s+WHERE\s+"
+        r"(?:\(\s*)?"
+        + idRegEx
+        + r"\s*(?:\)\s*)?"
+        r"\s*(?:AND|and)\s+"
+        r"(?:\(\s*)?`?transactionType`?\s*=\s*(?P<txn_q>''|['\"])(?P<transactionType>\w+)(?P=txn_q)\s*(?:\)\s*)?"
+        r"\s*(?:AND|and)\s+"
+        r"(?:\(\s*)?`?name`?\s*=\s*(?P<txnNameVal>''[^']+''|'[^']+'|\"[^\"]+\")\s*(?:\)\s*)?"
+        r"\s*(?:EXTRAPOLATE)?\s*\)?\s*$",
+        query,
+        flags=re.IGNORECASE,
+    )
+    if res:
+        groupdict = res.groupdict()
+        try:
+            entityType, names, isUnResolvedGUID = resolveEntityGuids(
+                groupdict.get("idType"), groupdict.get("guid"), groupdict.get("guids"), all_entities
+            )
+        except Exception as ex:
+            return "ERROR", "# %s\n%s" % (ex, query), '{}', 1
+        if entityType != "APPLICATION":
+            raise ValueError("unhandled entity type " + entityType)
+        fragment, labelPairs = makeEsr(entityType, names)
+        spanKind = 'span_kind=~"server|consumer"'
+        groupBy = parseFacet(entityType, groupdict.get("facet"))
+        groupByStr = " by ({})".format(",".join(groupBy)) if groupBy else ""
+        transaction_type = strip_nr_quoted_literal(groupdict.get("transactionType") or "")
+        txn_name = strip_nr_quoted_literal(groupdict["txnNameVal"])
+        if transaction_type and transaction_type not in ("Web", "Other"):
+            raise ValueError("unhandled transactionType " + transaction_type)
+        model = {}
+        fragment += ', root_name="{}"'.format(dquote(txn_name))
+        if groupdict.get("rpm1"):
+            newQuery = "sum(rate(cube_apm_calls_total{{{fragment}, {spanKind}}} default 0)){groupBy} * 60".format(
+                fragment=fragment, spanKind=spanKind, groupBy=groupByStr
+            )
+        else:
+            newQuery = "sum(increase(cube_apm_calls_total{{{fragment}, {spanKind}}} default 0)){groupBy}".format(
+                fragment=fragment, spanKind=spanKind, groupBy=groupByStr
+            )
+        if isUnResolvedGUID:
+            return "GUID", newQuery, json.dumps(model), 1
+        return "REQUEST_COUNT", newQuery, json.dumps(model), 1
+
     # request_count ############################
     res = re.search(
         r"^\s*\(?\s*SELECT\s+(?P<rpm1>rate\s*\()?\s*count\s*\(\s*apm\.(?P<mType>service|key)\.transaction\.duration\s*\)\s*(?P<rpm2>,\s*1\s+minute\s*\))?\s*(?:AS\s*(?:\w+|'[^']*'|\"[^\"]*\"))?\s*FROM\s+Metric\s+WHERE\s+" + idRegEx + r"\s*" + transactionTypeOptionalRegEx + r"\s*" + transactionNameOptionalRegEx + r"\s*" + facetOptionalRegEx + r"\s*\)?\s*$",
