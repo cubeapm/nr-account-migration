@@ -26,7 +26,8 @@ idRegEx = r"\(?\`?(?P<idType>appId|appName|entity\.guid|entityGuid)\`?\s*(?:=\s*
 
 facetOptionalRegEx = r"(?:FACET\s*\`?(?P<facet>appId|appName|entity\.guid|entity\.name|transactionName)\`?)?"
 
-transactionTypeOptionalRegEx = r"(?:(?:AND\s*)?\(?\s*transactionType\s*=\s*(?:'|\")(?P<transactionType>\w+)(?:'|\")\s*\)?\s*)?"
+# Require AND/and before transactionType so we never zero-match while "and transactionType=..." remains (see appId ... and transactionType ...).
+transactionTypeOptionalRegEx = r"(?:\s*(?:AND|and)\s+\(?\s*transactionType\s*=\s*(?P<txn_q>''|['\"])(?P<transactionType>\w+)(?P=txn_q)\s*\)?\s*)?"
 transactionNameOptionalRegEx = r"(?:(?:AND\s*)?\(?\s*transactionName\s*=\s*(?P<transactionName>''[^']+''|'[^']+'|\"[^\"]+\")\s*\)?\s*)?"
 
 
@@ -107,6 +108,18 @@ def parseFacet(entityType, facet):
         raise ValueError("unhandled facet " + facet)
     
     return groupBy
+
+
+def strip_nr_quoted_literal(value):
+    """Strip NR/SQL string wrappers: 'x', \"x\", or ''x'' (escaped singles in SQL dumps)."""
+    if value is None:
+        return None
+    s = value.strip()
+    if len(s) >= 4 and s.startswith("''") and s.endswith("''"):
+        return s[2:-2].replace("''", "'")
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "'\"":
+        return s[1:-1]
+    return s
 
 
 def makeEsr(entityType, names, serviceLabel='service'):
@@ -464,10 +477,67 @@ histogram_share(2.0, sum{groupByWithVmrange} (increase(cube_apm_latency_bucket{{
             return 'GUID', newQuery, json.dumps(model), thresholdMultiplier
         return 'LATENCY_AVERAGE', newQuery, json.dumps(model), thresholdMultiplier
     
-    # percentile latency ############################
+    # percentile latency — Transaction WHERE appName AND request.uri ############################
     res = re.search(
-        r"^\s*SELECT\s+percentile\s*\(\s*duration\s*,\s*(?P<percentile>[0-9\.]+)\s*\)\s+FROM\s+Transaction\s+WHERE\s+" + idRegEx + r"\s*" + transactionTypeOptionalRegEx + r"\s*" + facetOptionalRegEx + r"\s*$",
-        query, flags=re.IGNORECASE
+        r"^\s*SELECT\s+percentile\s*\(\s*duration\s*,\s*(?P<percentile>[0-9\.]+)\s*\)\s*(?:\*\s*1000)?\s*(?:AS\s+(?:\w+|''[^']*''|'[^']+'|\"[^\"]+\"))?\s+FROM\s+Transaction\s+WHERE\s+"
+        r"(?:\(\s*)?`?appName`?\s*=\s*(?P<appNameVal>''[^']+''|'[^']+'|\"[^\"]+\")\s*(?:\)\s*)?\s*(?:AND|and)\s+(?:\(\s*)?`?request\.uri`?\s*=\s*(?P<uriVal>''[^']+''|'[^']+'|\"[^\"]+\")\s*(?:\)\s*)?\s*(?:\s+EXTRAPOLATE)?\s*$",
+        query,
+        flags=re.IGNORECASE,
+    )
+    if res:
+        groupdict = res.groupdict()
+        thresholdMultiplier = 1000
+        percentile = groupdict["percentile"]
+        app_name = strip_nr_quoted_literal(groupdict["appNameVal"])
+        request_uri = strip_nr_quoted_literal(groupdict["uriVal"])
+        try:
+            entityType, names, isUnResolvedGUID = resolveEntityGuids("appName", app_name, None, all_entities)
+        except Exception as ex:
+            return "ERROR", "# %s\n%s" % (ex, query), '{}', 1
+        if entityType != "APPLICATION":
+            raise ValueError("unhandled entity type " + entityType)
+        fragment, labelPairs = makeEsr(entityType, names)
+        spanKind = 'span_kind=~"server|consumer"'
+        groupBy = []
+        groupByWithVmrange = groupBy + ["vmrange"]
+        groupByWithVmrangeStr = " by ({})".format(",".join(groupByWithVmrange))
+        uri_escaped = re.escape(request_uri)
+        fragment += ', root_name=~".*{}.*"'.format(uri_escaped)
+        model = {
+            "model": {
+                "type": "quick",
+                "calculate": "latency_percentile",
+                "value": percentile,
+                "labelPairs": labelPairs,
+                "groupBy": groupBy,
+            },
+        }
+        newQuery = "histogram_quantile({percentile}/100, sum(increase(cube_apm_latency_bucket{{{fragment}, {spanKind}}} default 0)){groupByWithVmrange}) * 1000".format(
+            fragment=fragment,
+            spanKind=spanKind,
+            percentile=percentile,
+            groupByWithVmrange=groupByWithVmrangeStr,
+        )
+        if isUnResolvedGUID:
+            return "GUID", newQuery, json.dumps(model), thresholdMultiplier
+        return "LATENCY_PERCENTILE", newQuery, json.dumps(model), thresholdMultiplier
+
+    # percentile latency ############################
+    # Optional * 1000 and AS alias (NRQL often uses "as Average"); optional extra AND (...) e.g. transactionSubType
+    transactionWhereTailRegEx = (
+        r"\s*"
+        + idRegEx
+        + r"\s*"
+        + transactionTypeOptionalRegEx
+        + r"\s*(?:AND\s*\([^)]+\)\s*)*"
+        + facetOptionalRegEx
+        + r"\s*(?:\s+EXTRAPOLATE)?\s*$"
+    )
+    res = re.search(
+        r"^\s*SELECT\s+percentile\s*\(\s*duration\s*,\s*(?P<percentile>[0-9\.]+)\s*\)\s*(?:\*\s*1000)?\s*(?:AS\s+(?:\w+|''[^']*''|'[^']+'|\"[^\"]+\"))?\s+FROM\s+Transaction\s+WHERE\s+"
+        + transactionWhereTailRegEx,
+        query,
+        flags=re.IGNORECASE,
     )
     if res:
         groupdict = res.groupdict()
