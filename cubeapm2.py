@@ -452,6 +452,95 @@ histogram_share(2.0, sum{groupByWithVmrange} (increase(cube_apm_latency_bucket{{
         if isUnResolvedGUID:
             return 'GUID', newQuery, json.dumps(model), 1
         return 'ERROR_COUNT', newQuery, json.dumps(model), 1
+
+    # cpu user utilization ############################
+    res = re.search(
+        r"^\s*SELECT\s+average\s*\(\s*newrelic\.timeslice\.value\s*\)\s*"
+        r"(?:AS\s*(?:\w+|''[^']*''|'[^']*'|\"[^\"]*\"))?\s*"
+        r"FROM\s+Metric\s+WHERE\s+"
+        r"metricTimesliceName\s*=\s*(?P<metricTimesliceName>''[^']+''|'[^']+'|\"[^\"]+\")\s*"
+        r"(?:AND\s+)?"
+        + idRegEx + r"\s*"
+        + facetOptionalRegEx + r"\s*$",
+        query,
+        flags=re.IGNORECASE,
+    )
+    if res:
+        groupdict = res.groupdict()
+
+        metric_timeslice_name = strip_nr_quoted_literal(groupdict.get("metricTimesliceName") or "")
+        if metric_timeslice_name.lower() != "cpu/user/utilization":
+            # Not our CPU metric; let other handlers match.
+            pass
+        else:
+            try:
+                entityType, names, isUnResolvedGUID = resolveEntityGuids(
+                    groupdict.get("idType"), groupdict.get("guid"), groupdict.get("guids"), all_entities
+                )
+            except Exception as ex:
+                return "ERROR", "# %s\n%s" % (ex, query), "{}", 1
+
+            if entityType != "APPLICATION" and entityType != "KEY_TRANSACTION":
+                raise ValueError("unhandled entity type " + entityType)
+
+            fragment, labelPairs = makeEsr(entityType, names)
+            groupBy = parseFacet(entityType, groupdict.get("facet"))
+            groupByStr = " by ({})".format(",".join(groupBy)) if groupBy else ""
+
+            model = {}
+            newQuery = 'avg(cube_apm_cpu_utilization{{{fragment}, state="user"}}){groupBy} * 100'.format(
+                fragment=fragment,
+                groupBy=groupByStr,
+            )
+
+            if isUnResolvedGUID:
+                return "GUID", newQuery, json.dumps(model), 1
+            return "CPU_USER_UTILIZATION", newQuery, json.dumps(model), 1
+
+    # heap memory utilization ############################
+    res = re.search(
+        r"^\s*SELECT\s+average\s*\(\s*newrelic\.timeslice\.value\s*\)\s*"
+        r"(?:AS\s*(?:\w+|''[^']*''|'[^']*'|\"[^\"]*\"))?\s*"
+        r"FROM\s+Metric\s+WHERE\s+"
+        r"metricTimesliceName\s*=\s*(?P<metricTimesliceName>''[^']+''|'[^']+'|\"[^\"]+\")\s*"
+        r"(?:AND\s+)?"
+        + idRegEx
+        + r"\s*"
+        + facetOptionalRegEx
+        + r"\s*$",
+        query,
+        flags=re.IGNORECASE,
+    )
+    if res:
+        groupdict = res.groupdict()
+
+        metric_timeslice_name = strip_nr_quoted_literal(groupdict.get("metricTimesliceName") or "")
+        if metric_timeslice_name.lower() != "memory/heap/utilization":
+            pass
+        else:
+            try:
+                entityType, names, isUnResolvedGUID = resolveEntityGuids(
+                    groupdict.get("idType"), groupdict.get("guid"), groupdict.get("guids"), all_entities
+                )
+            except Exception as ex:
+                return "ERROR", "# %s\n%s" % (ex, query), "{}", 1
+
+            if entityType != "APPLICATION" and entityType != "KEY_TRANSACTION":
+                raise ValueError("unhandled entity type " + entityType)
+
+            fragment, labelPairs = makeEsr(entityType, names)
+            groupBy = parseFacet(entityType, groupdict.get("facet"))
+            groupByStr = " by ({})".format(",".join(groupBy)) if groupBy else ""
+
+            model = {}
+            newQuery = (
+                'sum(jvm.memory.used{{{fragment}, jvm.memory.type="heap"}}){groupBy} * 100 / '
+                'sum(jvm.memory.limit{{{fragment}, jvm.memory.type="heap"}}){groupBy}'
+            ).format(fragment=fragment, groupBy=groupByStr)
+
+            if isUnResolvedGUID:
+                return "GUID", newQuery, json.dumps(model), 1
+            return "MEMORY_HEAP_UTILIZATION", newQuery, json.dumps(model), 1
     
     # avg latency ############################
     res = re.search(
