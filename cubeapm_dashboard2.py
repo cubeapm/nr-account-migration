@@ -980,6 +980,7 @@ def translate_widget(widget, entities, mode):
                 qobj = {
                     'type': query_type,
                     'query': translated_query,
+                    'originalQuery': query['query'],
                     'model': json.loads(model) if model != '{}' else {},
                     'priority': priority,
                 }

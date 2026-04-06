@@ -22,6 +22,21 @@ def escape_json_for_sql(json_obj):
     json_str = json.dumps(json_obj, separators=(',', ':'))
     return "'" + json_str.replace("'", "''") + "'"
 
+
+def query_field_with_original(original_query, translated_query):
+    """
+    Stored `query` string: original NRQL as PromQL # comment line(s), newline,
+    then the translated query. Each line of a multi-line original gets its own #.
+    """
+    t = translated_query if isinstance(translated_query, str) else ''
+    o = original_query if isinstance(original_query, str) else ''
+    if not o.strip():
+        return t
+    lines = o.replace('\r\n', '\n').split('\n')
+    commented = '\n'.join('#' + line for line in lines)
+    return commented + '\n' + t
+
+
 def to_react_grid_layout(layout_dict, item_id):
     """Convert input layout with keys {column,row,width,height} to React Grid Layout {x,y,w,h,i}"""
     if not isinstance(layout_dict, dict):
@@ -159,9 +174,10 @@ def generate_mysql_inserts(json_file_path, output_file_path):
                                     main_q = raw_q
                                 if not isinstance(main_q, str):
                                     main_q = ''
+                                orig = q.get('originalQuery')
                                 qo = {
                                     'unit': q.get('unit', 'number'),
-                                    'query': main_q,
+                                    'query': query_field_with_original(orig, main_q),
                                     'title': q.get('title', ''),
                                 }
                                 if total_q:
