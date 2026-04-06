@@ -157,7 +157,7 @@ def mapQuery(query, all_entities):
         try:
             entityType, names = resolveEntityGuids(groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities)
         except Exception as ex:
-            return "ERROR", "%s # %s" % (query, ex), '{}', 1
+            return "ERROR", "%s # %s" % (query, ex), '{}', 1, None
 
         if entityType != "APPLICATION":
             raise ValueError("unhandled entity type " + entityType)
@@ -179,7 +179,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
 * sum by (service) (increase(cube_apm_latency_count{{{fragment}, {spanKind}, status_code!="ERROR"}} default 0))
 / sum by (service) (increase(cube_apm_latency_count{{{fragment}, {spanKind}}} default 0))""".format(fragment=fragment, spanKind=spanKind)
 
-        return 'APDEX', newQuery, '{}', 1
+        return 'APDEX', newQuery, '{}', 1, None
 
     # Web / APM throughput RPM: rate(count(apm.*.transaction.duration), 1 minute) ############
     res = re.search(
@@ -203,7 +203,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
                 groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities
             )
         except Exception as ex:
-            return "ERROR", "%s # %s" % (query, ex), '{}', 1
+            return "ERROR", "%s # %s" % (query, ex), '{}', 1, None
 
         if entityType == "APPLICATION":
             if groupdict.get('mType') != 'service':
@@ -244,7 +244,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
             "sum by (service{gb}) (increase(cube_apm_calls_total{{{frag}, {sk}}} default 0)) * 60 / step"
         ).format(gb=gb, frag=fragment, sk=spanKind)
 
-        return 'REQUEST_COUNT', newQuery, json.dumps(model), 1
+        return 'REQUEST_COUNT', newQuery, json.dumps(model), 1, None
     
     # request_count ############################
     res = re.search(
@@ -257,7 +257,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
         try:
             entityType, names = resolveEntityGuids(groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities)
         except Exception as ex:
-            return "ERROR", "%s # %s" % (query, ex), '{}', 1
+            return "ERROR", "%s # %s" % (query, ex), '{}', 1, None
 
         if entityType == "APPLICATION":
             if groupdict.get('mType') != 'service':
@@ -298,7 +298,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
             ',' + ','.join(groupBy) if groupBy else '', fragment, spanKind
         )
 
-        return 'REQUEST_COUNT', newQuery, json.dumps(model), 1
+        return 'REQUEST_COUNT', newQuery, json.dumps(model), 1, None
 
     # error % — count(...) or sum(...['count']) / count(transaction.duration); optional Web/Other via transactionType ############
     res = re.search(
@@ -326,7 +326,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
                 groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities
             )
         except Exception as ex:
-            return "ERROR", "%s # %s" % (query, ex), '{}', 1
+            return "ERROR", "%s # %s" % (query, ex), '{}', 1, None
 
         mType = groupdict.get('mTypeCount') or groupdict.get('mTypeSum')
         mType2 = groupdict.get('mType2')
@@ -373,7 +373,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
             "{scale} / sum by (service{gb}) (increase(cube_apm_calls_total{{{frag}, {sk}}} default 0))"
         ).format(gb=gb, frag=fragment, sk=spanKind, scale=scale)
 
-        return "ERROR_PERCENTAGE", newQuery, json.dumps(model), 1
+        return "ERROR_PERCENTAGE", newQuery, json.dumps(model), 1, None
 
     # error_rate ############################
     res = re.search(
@@ -386,7 +386,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
         try:
             entityType, names = resolveEntityGuids(groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities)
         except Exception as ex:
-            return "ERROR", "%s # %s" % (query, ex), '{}', 1
+            return "ERROR", "%s # %s" % (query, ex), '{}', 1, None
 
         if entityType == "APPLICATION":
             if groupdict.get('mType') != 'service':
@@ -427,7 +427,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
             ',' + ','.join(groupBy) if groupBy else '', fragment, spanKind
         )
 
-        return 'ERROR_RATE', newQuery, json.dumps(model), 1
+        return 'ERROR_RATE', newQuery, json.dumps(model), 1, None
 
     # latency_average — average(convert(apm.*.duration, unit, 'ms')) + optional NRQL tail ############
     res = re.search(
@@ -451,7 +451,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
                 groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities
             )
         except Exception as ex:
-            return "ERROR", "%s # %s" % (query, ex), '{}', 1
+            return "ERROR", "%s # %s" % (query, ex), '{}', 1, None
 
         mType = groupdict.get('mType')
         mType2 = groupdict.get('mType2')
@@ -511,7 +511,73 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
             ms=ms_suffix,
         )
 
-        return 'LATENCY_AVERAGE', newQuery, json.dumps(model), 1
+        return 'LATENCY_AVERAGE', newQuery, json.dumps(model), 1, None
+
+    # latency_average — average(apm.*.transaction.duration * 1000) → response time in ms + NRQL tail ############
+    res = re.search(
+        r"^\s*SELECT\s+average\s*\(\s*`?apm\.(?P<mType>service|key)\.transaction\.duration`?\s*\*\s*1000\s*\)\s*"
+        r"(?:AS\s*(?:\w+|'[^']*'|\"[^\"]*\"))?\s*"
+        r"FROM\s+Metric\s+WHERE\s+"
+        + idRegEx
+        + r"\s*"
+        + transactionTypeOptionalRegEx
+        + r"\s*"
+        + facetOptionalRegEx
+        + nrqlOptionalTailRegEx,
+        query,
+        flags=re.IGNORECASE,
+    )
+    if res:
+        groupdict = res.groupdict()
+
+        try:
+            entityType, names = resolveEntityGuids(
+                groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities
+            )
+        except Exception as ex:
+            return "ERROR", "%s # %s" % (query, ex), '{}', 1, None
+
+        if entityType == "APPLICATION":
+            if groupdict.get('mType') != 'service':
+                raise ValueError("unhandled situation: " + query)
+        elif entityType == "KEY_TRANSACTION":
+            if groupdict.get('mType') != 'key':
+                raise ValueError("unhandled situation: " + query)
+        else:
+            raise ValueError("unhandled entity type " + entityType)
+
+        fragment, labelPairs = makeEsr(entityType, names)
+        spanKind = 'span_kind=~"server|consumer"'
+        groupBy = parseFacet(entityType, groupdict.get('facet'))
+
+        model = {
+            "model": {
+                "type": "quick",
+                "calculate": "avg",
+                "value": "0",
+                "labelPairs": labelPairs,
+                "groupBy": groupBy,
+            },
+        }
+
+        transactionType = groupdict.get('transactionType')
+        if transactionType:
+            model = {}
+            if transactionType == 'Web':
+                fragment += ', root_name=~"WebTransaction/.*"'
+            elif transactionType == 'Other':
+                fragment += ', root_name=~"OtherTransaction/.*"'
+            else:
+                spanKind = 'span_kind=~"server|consumer", transaction_type="{}"'.format(transactionType)
+
+        gb = ',' + ','.join(groupBy) if groupBy else ''
+        newQuery = (
+            "sum by (service{gb}) (increase(cube_apm_latency_sum{{{frag}, {sk}}} default 0))"
+            " / sum by (service{gb}) (increase(cube_apm_latency_count{{{frag}, {sk}}} default 0))"
+            " * 1000"
+        ).format(gb=gb, frag=fragment, sk=spanKind)
+
+        return 'LATENCY_AVERAGE', newQuery, json.dumps(model), 1, None
 
     # latency_average ############################
     res = re.search(
@@ -531,7 +597,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
         try:
             entityType, names = resolveEntityGuids(groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities)
         except Exception as ex:
-            return "ERROR", "%s # %s" % (query, ex), '{}', 1
+            return "ERROR", "%s # %s" % (query, ex), '{}', 1, None
 
         if entityType == "APPLICATION":
             if groupdict.get('mType') != 'service':
@@ -573,7 +639,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
             ',' + ','.join(groupBy) if groupBy else '', fragment, spanKind
         )
 
-        return 'LATENCY_AVERAGE', newQuery, json.dumps(model), 1
+        return 'LATENCY_AVERAGE', newQuery, json.dumps(model), 1, None
 
     # latency_percentile ############################
     res = re.search(
@@ -586,7 +652,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
         try:
             entityType, names = resolveEntityGuids(groupdict.get('idType'), groupdict.get('guid'), groupdict.get('guids'), all_entities)
         except Exception as ex:
-            return "ERROR", "%s # %s" % (query, ex), '{}', 1
+            return "ERROR", "%s # %s" % (query, ex), '{}', 1, None
 
         if entityType == "APPLICATION":
             if groupdict.get('mType') != 'service':
@@ -627,7 +693,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
             float(percentile) / 100.0, ',' + ','.join(groupBy) if groupBy else '', fragment, spanKind
         )
 
-        return 'LATENCY_PERCENTILE', newQuery, json.dumps(model), 1
+        return 'LATENCY_PERCENTILE', newQuery, json.dumps(model), 1, None
 
     # Transaction error % — percentage(count(*), WHERE error IS true), appName IN|=, name LIKE, FACET name ############
     res = re.search(
@@ -655,10 +721,10 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
                     "appName", None, gd.get("txnGuids"), all_entities
                 )
         except Exception as ex:
-            return "ERROR", "%s # %s" % (query, ex), '{}', 1
+            return "ERROR", "%s # %s" % (query, ex), '{}', 1, None
 
         if entityType != "APPLICATION":
-            return "UNHANDLED", query, '{}', 1
+            return "UNHANDLED", query, '{}', 1, None
 
         like_inner = (gd.get("txnLikePattern") or "").strip()
         root_rx = like_pattern_to_promql_regex(like_inner)
@@ -690,7 +756,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
                 "groupBy": groupBy,
             },
         }
-        return "TRANSACTION_ERROR_PERCENTAGE", newQuery, json.dumps(model), 1
+        return "TRANSACTION_ERROR_PERCENTAGE", newQuery, json.dumps(model), 1, None
 
     # apm.service.overview.web — NR facet segmentName → two PromQL series (comma-separated) ############
     # NR dashboards use sum(...) or average(...); same Cube mapping for both.
@@ -710,10 +776,10 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
                 groupdict.get("idType"), groupdict.get("guid"), groupdict.get("guids"), all_entities
             )
         except Exception as ex:
-            return "ERROR", "%s # %s" % (query, ex), '{}', 1
+            return "ERROR", "%s # %s" % (query, ex), '{}', 1, None
 
         if entityType != "APPLICATION":
-            return "UNHANDLED", query, '{}', 1
+            return "UNHANDLED", query, '{}', 1, None
 
         fragment, labelPairs = makeEsr(entityType, names)
 
@@ -747,7 +813,6 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
 
         q2 = "sum(" + sum_srv + ") / sum(" + cnt_srv + ") * 1000"
 
-        newQuery = "{}, {}".format(q1, q2)
         model = {
             "model": {
                 "type": "quick",
@@ -757,7 +822,7 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
                 "groupBy": ["group_name"],
             },
         }
-        return "OVERVIEW_WEB", newQuery, json.dumps(model), 1
+        return "OVERVIEW_WEB", q1, json.dumps(model), 1, q2
 
     # apm.service.overview.other — same dual PromQL as web, scoped to OtherTransaction ############
     res = re.search(
@@ -776,10 +841,10 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
                 od.get("idType"), od.get("guid"), od.get("guids"), all_entities
             )
         except Exception as ex:
-            return "ERROR", "%s # %s" % (query, ex), '{}', 1
+            return "ERROR", "%s # %s" % (query, ex), '{}', 1, None
 
         if entityType != "APPLICATION":
-            return "UNHANDLED", query, '{}', 1
+            return "UNHANDLED", query, '{}', 1, None
 
         fragment, labelPairs = makeEsr(entityType, names)
         other_root = ', root_name=~"OtherTransaction/.*"'
@@ -818,7 +883,6 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
 
         q2 = "sum(" + sum_srv + ") / sum(" + cnt_srv + ") * 1000"
 
-        newQuery = "{}, {}".format(q1, q2)
         model = {
             "model": {
                 "type": "quick",
@@ -828,10 +892,10 @@ histogram_share(2.0, sum by (service,vmrange) (increase(cube_apm_latency_bucket{
                 "groupBy": ["group_name"],
             },
         }
-        return "OVERVIEW_OTHER", newQuery, json.dumps(model), 1
+        return "OVERVIEW_OTHER", q1, json.dumps(model), 1, q2
 
     # Unhandled query
-    return "UNHANDLED", query, '{}', 1
+    return "UNHANDLED", query, '{}', 1, None
 
 
 def migrate(src_acct_id, mode):
@@ -911,14 +975,25 @@ def translate_widget(widget, entities, mode):
         cubeapm_widget['queries'] = []
         for query in raw_config['nrqlQueries']:
             if 'query' in query:
-                query_type, translated_query, model, priority = mapQuery(query['query'], entities)
-                cubeapm_widget['queries'].append({
+                qres = mapQuery(query['query'], entities)
+                query_type, translated_query, model, priority, total_query = qres
+                qobj = {
                     'type': query_type,
                     'query': translated_query,
                     'model': json.loads(model) if model != '{}' else {},
-                    'priority': priority
-                })
-                logger.info('Translated query: %s -> %s' % (query['query'], translated_query))
+                    'priority': priority,
+                }
+                if total_query is not None:
+                    qobj['totalQuery'] = total_query
+                cubeapm_widget['queries'].append(qobj)
+                logger.info(
+                    'Translated query: %s -> %s%s'
+                    % (
+                        query['query'],
+                        translated_query,
+                        (' | totalQuery=' + total_query) if total_query else '',
+                    )
+                )
     
     # Handle markdown widgets
     elif 'text' in raw_config:

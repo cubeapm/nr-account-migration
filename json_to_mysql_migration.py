@@ -16,11 +16,11 @@ def escape_sql_string(s):
     return "'" + str(s).replace("\\", "\\\\").replace("'", "''") + "'"
 
 def escape_json_for_sql(json_obj):
-    """Convert JSON object to properly escaped SQL JSON string"""
+    """Convert JSON object to a SQL string literal. json.dumps is already valid JSON — do not double backslashes."""
     if json_obj is None:
         return 'NULL'
     json_str = json.dumps(json_obj, separators=(',', ':'))
-    return "'" + json_str.replace("\\", "\\\\").replace("'", "''") + "'"
+    return "'" + json_str.replace("'", "''") + "'"
 
 def to_react_grid_layout(layout_dict, item_id):
     """Convert input layout with keys {column,row,width,height} to React Grid Layout {x,y,w,h,i}"""
@@ -146,12 +146,32 @@ def generate_mysql_inserts(json_file_path, output_file_path):
                         queries_objects = []
                         for q in queries_in if isinstance(queries_in, list) else []:
                             if isinstance(q, dict):
-                                queries_objects.append({
+                                raw_q = q.get('query', '')
+                                total_q = q.get('totalQuery')
+                                if isinstance(raw_q, list):
+                                    main_q = raw_q[0] if len(raw_q) > 0 else ''
+                                    total_q = (
+                                        raw_q[1]
+                                        if len(raw_q) > 1
+                                        else total_q
+                                    )
+                                else:
+                                    main_q = raw_q
+                                if not isinstance(main_q, str):
+                                    main_q = ''
+                                qo = {
                                     'unit': q.get('unit', 'number'),
-                                    'query': q.get('query', ''),
+                                    'query': main_q,
                                     'title': q.get('title', ''),
-                                })
-                        query_top = queries_objects[0]['query'] if len(queries_objects) > 0 else ''
+                                }
+                                if total_q:
+                                    qo['totalQuery'] = total_q
+                                queries_objects.append(qo)
+                        query_top = (
+                            queries_objects[0]['query']
+                            if len(queries_objects) > 0
+                            else ''
+                        )
                         config = {
                             'page': page_name,
                             'unit': 'number',
